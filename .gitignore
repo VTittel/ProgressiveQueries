@@ -1,5 +1,6 @@
 *.class
 *.log
+*.iml
 
 # sbt specific
 .cache/
@@ -18,6 +19,7 @@ project/plugins/project/
 .idea
 
 # Project specific
-Customers.csv
-Transactions.csv
+partitioned_with_sid_sf10
+data_parquet_sf10
+spark-warehouse
 .cache-main
