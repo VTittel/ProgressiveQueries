@@ -49,11 +49,11 @@ object entryPoint {
       """
 
 
-    // True answer - 188869.469330
+    // True  query1 - 188869.469330
     // True answer query2 - 151069.216228
+    // Loads full dataset
   //  TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
-  //  spark.sql(query2).show()
-    run_simple_query(spark, query2, params, agg)
+    run_single_table_query(spark, query2, params, agg)
     //run_join_query(spark, join_inputs, agg)
   //  partitionBySampleGroup(spark, "data_parquet_sf10", 100)
  //   generate_data_with_sid(spark, "partitioned_sf10", false)
@@ -80,8 +80,7 @@ object entryPoint {
     }
   }
 
-
-
+  
   /*
   Function to assign SIDs to each table.
   Due to how parquet works, adding a column requires to reading the original data, adding the sid column,
@@ -145,7 +144,7 @@ object entryPoint {
   @return nothing
    */
 
-  def run_simple_query(spark: SparkSession, query: String, params: Map[String, String], agg: (String, String)): Unit ={
+  def run_single_table_query(spark: SparkSession, query: String, params: Map[String, String], agg: (String, String)): Unit ={
     // Sample size, expressed in % of total table size. Only discrete values between 0-100 are possible for now
     val maxIterations: Integer = params("sampleSize").toInt
     val topDir = params("dataDir")
@@ -206,13 +205,15 @@ object entryPoint {
 
       val resultAggregated = spark.sql(aggQuery)
 
-
       // Evaluate new result
       val res = Eval.eval_single_table(result, params, agg, i+1)
       currentError = res("error").toDouble
 
       println("Result : ")
-      resultAggregated.show()
+      // TODO: Collects on driver, use map instead
+      // List of rows. Use row(i) to retrieve value at column i
+      var resultList: List[Row] = resultAggregated.collect().toList
+
       println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
       println("Error : " + currentError)
 
