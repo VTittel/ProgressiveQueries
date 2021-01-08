@@ -55,11 +55,15 @@ object entryPoint {
   //  TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
     //runSingleTableQuery(spark, query2, params, agg)
     runJoinQuery(spark, query1, join_inputs, agg, params)
+    val query3 = "select avg(o_totalprice) from parquet.`partitioned_with_sid_sf10/lineitem.parquet/unif_sample_group=3` " +
+      "as lineitem join parquet.`partitioned_with_sid_sf10/order.parquet/unif_sample_group=3` " +
+      "as order on lineitem.l_orderkey = order.o_orderkey"
+
   //  partitionBySampleGroup(spark, "data_parquet_sf10", 100)
  //   generate_data_with_sid(spark, "partitioned_sf10", false)
     println("Program finished");
- //   System.in.read();
-  //  spark.stop();
+  //  System.in.read();
+   // spark.stop();
   }
 
   /*
@@ -304,6 +308,7 @@ object entryPoint {
       // Result with newly assigned SIDs
       resultWithSid = resultWithSid.where("sid != 0")
 
+
       // Add new samples to old ones
       if ( i == 1)
         runningResult = resultWithSid
@@ -324,6 +329,7 @@ object entryPoint {
       println("Result :" + res("est"))
       println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
       println("Error : " + currentError)
+
 
    //   if (currentError <= tol)
      //   break
@@ -346,8 +352,8 @@ object entryPoint {
     println("Time taken : " + elapsedMs + "ms")
 
 
-    System.in.read();
-    spark.stop();
+    //System.in.read();
+    //spark.stop();
   }
 
 
