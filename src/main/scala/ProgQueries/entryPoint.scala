@@ -266,11 +266,12 @@ object entryPoint {
       filesPerTable += (tableName -> files)
     }
 
-    val startTime = System.nanoTime
 
     var i = 1
 
-    while (i <= 5) {
+    val startTime = System.nanoTime
+
+    while (i <= 1) {
       // Modify query and do the join for current batch
       // Bucket index, which bucket we should use
       var j = 0
@@ -299,7 +300,7 @@ object entryPoint {
       val sidColumns = partial.schema.fieldNames.filter( col => col.contains("_sid"))
       var resultWithSid = partial.withColumn("sid", sidUDF(lit(b), struct(partial.columns map col: _*),
         array(sidColumns.map(lit(_)): _*)))
-      resultWithSid.cache()  // needed, otherwise filter doesnt work
+    //  resultWithSid.cache()  // needed, otherwise filter doesnt work
       // Result with newly assigned SIDs
       resultWithSid = resultWithSid.where("sid != 0")
 
@@ -316,15 +317,11 @@ object entryPoint {
       val resultGroupedBySid = spark.sql(aggQuery)
       resultGroupedBySid.createOrReplaceTempView("join_result")
 
-      // Compute final result, i.e. without groupby on sid
-      val aggFinalQuery = "select "  + agg._1 + "(`" +  agg._1 + "(" + agg._2 + ")`) " + " from join_result"
-      val finalResult = spark.sql(aggFinalQuery)
-      finalResult.show()
-
       // Evaluate new result
       val res = Eval.evaluatePartialResult(resultGroupedBySid, params, agg, i+1)
       currentError = res("error").toDouble
 
+      println("Result :" + res("est"))
       println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
       println("Error : " + currentError)
 
@@ -345,10 +342,12 @@ object entryPoint {
     }
 
     val endTime = System.nanoTime
-
     val elapsedMs = (endTime - startTime) / 1e6d
-
     println("Time taken : " + elapsedMs + "ms")
+
+
+    System.in.read();
+    spark.stop();
   }
 
 

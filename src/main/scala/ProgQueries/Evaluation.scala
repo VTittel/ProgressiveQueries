@@ -42,6 +42,7 @@ class Evaluation extends Serializable {
    */
   def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String], agg: (String, String), sf: Integer): Map[String, String] = {
     val alpha = params("alpha").toDouble
+    resultDF.cache()
     // Subsample sizes
     val n = resultDF.count()
     val ns = math.pow(n, 0.5)
@@ -51,8 +52,7 @@ class Evaluation extends Serializable {
 
     agg._1 match {
       case "avg" => {
-        est = resultDF.agg(avg(agg._1 + "(" + agg._2 + ")")).rdd.map(row => (row.getDecimal(0))).collect()(0)
-          .setScale(2, BigDecimal.RoundingMode.HALF_UP)
+        est = subsamples_est.sum/subsamples_est.length
       }
       case "sum" => {
         est = resultDF.agg(avg(agg._1 + "(" + agg._2 + ")")).rdd.map(row => (row.getDecimal(0))).collect()(0)
@@ -66,7 +66,8 @@ class Evaluation extends Serializable {
 
     return mutable.Map("error" -> error.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
       "ci_low" -> cb._2.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
-      "ci_high" -> cb._1.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString)
+      "ci_high" -> cb._1.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
+      "est" -> est.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString)
 
   }
 
