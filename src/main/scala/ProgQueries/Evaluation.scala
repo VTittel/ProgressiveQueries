@@ -42,13 +42,14 @@ class Evaluation extends Serializable {
    */
   def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String], agg: (String, String), sf: Integer): Map[String, String] = {
     val alpha = params("alpha").toDouble
-    resultDF.cache()
+   // resultDF.cache()
     // Subsample sizes
-    val n = resultDF.count()
-    val ns = math.pow(n, 0.5)
     var est: BigDecimal = BigDecimal("0.0")
     val subsamples_est: Array[BigDecimal] = resultDF.rdd.map(row => (BigDecimal.valueOf(row.getDecimal(0).doubleValue())))
       .collect()
+
+    val n = subsamples_est.length
+    val ns = math.pow(n, 0.5)
 
     agg._1 match {
       case "avg" => {

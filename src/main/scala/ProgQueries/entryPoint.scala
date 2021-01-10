@@ -30,6 +30,10 @@ object entryPoint {
 
     spark.sparkContext.setLogLevel("ERROR")
 
+    val Exp = new Experimental()
+
+    Exp.DoStuff(spark)
+
     val params = Map("errorTol" -> "2.0",
       "sampleSize" -> "4",
       "b" -> "100",
@@ -54,7 +58,7 @@ object entryPoint {
     // Loads full dataset
   //  TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
     //runSingleTableQuery(spark, query2, params, agg)
-    runJoinQuery(spark, query1, join_inputs, agg, params)
+  //  runJoinQuery(spark, query1, join_inputs, agg, params)
     val query3 = "select avg(o_totalprice) from parquet.`partitioned_with_sid_sf10/lineitem.parquet/unif_sample_group=3` " +
       "as lineitem join parquet.`partitioned_with_sid_sf10/order.parquet/unif_sample_group=3` " +
       "as order on lineitem.l_orderkey = order.o_orderkey"
