@@ -1,10 +1,10 @@
 package ProgQueries
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.sql.functions.{array, avg, col, lit, struct, sum, udf}
+import org.apache.spark.sql.functions.udf
 
 import scala.collection.mutable
-import scala.collection.mutable.Map
+import scala.collection.mutable.{ArrayBuffer, Map}
 /*
 Result evaluation based on VerdictDB paper
 
@@ -16,7 +16,7 @@ class Evaluation extends Serializable {
   Function to assign subsamples to tuples
    */
 
-  def assign_subsamples(spark: SparkSession, table: DataFrame, tableName: String, n: Double, b: Integer): DataFrame = {
+  def assignSubsamples(spark: SparkSession, table: DataFrame, tableName: String, n: Double, b: Integer): DataFrame = {
 
     val rnd = new scala.util.Random
     val start = 1
@@ -40,40 +40,53 @@ class Evaluation extends Serializable {
   /*
   Function to evaluate (report error metrics) single and multi table queries
    */
-  def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String], agg: (String, String), sf: Integer): Map[String, String] = {
+  def evaluatePartialResult(resultDF: DataFrame, resultDFAggregated: DataFrame, params: Map[String, String],
+                            aggregates: ArrayBuffer[(String, String)],
+                            sf: Integer): ArrayBuffer[Map[String, String]] = {
+
     val alpha = params("alpha").toDouble
-   // resultDF.cache()
-    // Subsample sizes
-    var est: BigDecimal = BigDecimal("0.0")
-    val subsamples_est: Array[BigDecimal] = resultDF.rdd.map(row => (BigDecimal.valueOf(row.getDecimal(0).doubleValue())))
-      .collect()
+    val subsampPerAgg = mutable.Map[String, Array[BigDecimal]]()
+    var n = 0
+    val errorsArray = ArrayBuffer[mutable.Map[String, String]]()
 
-    val n = subsamples_est.length
+    // Calculate subsamples for each aggregate and store in an array
+    for (agg <- aggregates){
+
+      val aggString = agg._1 + "(" + agg._2 + ")"
+
+      val subsamples = resultDF.select(aggString).rdd.map(row => (BigDecimal.valueOf(row.getDecimal(0).doubleValue())))
+        .collect()
+
+      n = subsamples.length
+
+      subsampPerAgg += ((aggString, subsamples))
+    }
+
     val ns = math.pow(n, 0.5)
+    // Number of groups created by group by
+    val resultAggregated = resultDFAggregated.collect()
 
-    agg._1 match {
-      case "avg" => {
-        est = subsamples_est.sum/subsamples_est.length
-      }
-      case "sum" => {
-        est = resultDF.agg(avg(agg._1 + "(" + agg._2 + ")")).rdd.map(row => (row.getDecimal(0))).collect()(0)
-          .setScale(2, BigDecimal.RoundingMode.HALF_UP)
+    // For each group, for each aggregate
+    for (row <- resultAggregated){
+      for (agg <- aggregates){
+        val aggString = agg._1 + "(" + agg._2 + ")"
+        val aggValue = row.getAs(aggString).toString.toDouble
+        // TODO: add group by columns to result
+        val cb = getConfBounds(alpha, aggValue, subsampPerAgg(aggString), n, ns)
+        val error = ((cb._1 - cb._2)/2) / (((cb._1 + cb._2)/2)) * 100
 
+        errorsArray.append(mutable.Map("error" -> error.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
+          "ci_low" -> cb._2.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
+          "ci_high" -> cb._1.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
+          "est" -> aggValue.toString))
       }
     }
 
-    val cb = get_conf_bounds(alpha, est, subsamples_est, n.toInt, ns)
-    val error = ((cb._1 - cb._2)/2) / (((cb._1 + cb._2)/2)) * 100
-
-    return mutable.Map("error" -> error.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
-      "ci_low" -> cb._2.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
-      "ci_high" -> cb._1.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
-      "est" -> est.setScale(2, BigDecimal.RoundingMode.HALF_UP).toString)
-
+    return errorsArray
   }
 
 
-  def get_conf_bounds(alpha: Double, est: BigDecimal, subsamples_est: Array[BigDecimal],
+  def getConfBounds(alpha: Double, est: BigDecimal, subsamples_est: Array[BigDecimal],
                       n: Integer, ns: Double): (BigDecimal, BigDecimal) = {
 
     val diffs = new Array[BigDecimal](subsamples_est.length)
@@ -82,8 +95,8 @@ class Evaluation extends Serializable {
       diffs(i) = subsamples_est(i) - est
     }
 
-    val lower_q = get_quantile(diffs, alpha)
-    val upper_q = get_quantile(diffs, 1 - alpha)
+    val lower_q = getQuantile(diffs, alpha)
+    val upper_q = getQuantile(diffs, 1 - alpha)
     val lower_bound = est - lower_q * (math.sqrt(ns / n))
     val upper_bound = est - upper_q * (math.sqrt(ns / n))
 
@@ -91,7 +104,7 @@ class Evaluation extends Serializable {
   }
 
 
-  def get_quantile(diffs: Array[BigDecimal], quantile: Double): BigDecimal = {
+  def getQuantile(diffs: Array[BigDecimal], quantile: Double): BigDecimal = {
 
     val diffs2 = diffs.sorted
     val index = (Math.ceil(quantile / 1.0 * diffs2.length)).toInt

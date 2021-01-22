@@ -1,12 +1,12 @@
 package ProgQueries
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.expressions.NamedExpression
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, LogicalPlan, Project}
 import org.apache.spark.sql.functions._
 
-import scala.collection.mutable.Map
+import scala.collection.mutable.{ArrayBuffer, ListBuffer, Map}
 import scala.util.control.Breaks._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
-
-import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.types._
 
 import scala.collection.mutable
@@ -30,25 +30,18 @@ object entryPoint {
 
     spark.sparkContext.setLogLevel("ERROR")
 
-    val Exp = new Experimental()
-
-    Exp.DoStuff(spark)
-
     val params = Map("errorTol" -> "2.0",
-      "sampleSize" -> "4",
+      "sampleSize" -> "5",
       "b" -> "100",
       "dataDir" -> "partitioned_with_sid_sf10/",
       "alpha" -> "0.05")
 
-    val agg = ("avg", "o_totalprice")
-    val join_inputs = Array(
-      ("lineitem", "orders", "orderkey"))
 
-    val query1 = """select avg(o_totalprice), l_sid, o_sid from lineitem
+    val query1 = """select avg(o_totalprice) from lineitem
       join order on lineitem.l_orderkey = order.o_orderkey
       """
 
-    val query2 = """select avg(o_totalprice), o_orderstatus from order
+    val query2 = """select avg(o_totalprice), sum(o_totalprice), o_orderstatus from order
       where o_orderpriority = '5-LOW'
       group by o_orderstatus
       """
@@ -56,18 +49,63 @@ object entryPoint {
     // True  query1 - 188869.469330
     // True answer query2 - 151069.216228
     // Loads full dataset
-  //  TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
-    //runSingleTableQuery(spark, query2, params, agg)
-  //  runJoinQuery(spark, query1, join_inputs, agg, params)
-    val query3 = "select avg(o_totalprice) from parquet.`partitioned_with_sid_sf10/lineitem.parquet/unif_sample_group=3` " +
-      "as lineitem join parquet.`partitioned_with_sid_sf10/order.parquet/unif_sample_group=3` " +
-      "as order on lineitem.l_orderkey = order.o_orderkey"
+
+    //TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
+
+    runSingleTableQuery(spark, query2, params)
+    //runJoinQuery(spark, query1, "orderkey", agg, params)
+
 
   //  partitionBySampleGroup(spark, "data_parquet_sf10", 100)
  //   generate_data_with_sid(spark, "partitioned_sf10", false)
     println("Program finished");
   //  System.in.read();
    // spark.stop();
+  }
+
+  /*
+  Node type:
+  r: Aggregate => r.aggregateExpressions
+  r: Project => r.projectList works for when there is no group by
+   */
+
+  def parseQueryAggregate(logicalPlan: LogicalPlan, hasGroupBy: Boolean): ArrayBuffer[(String, String)] ={
+
+    val result = ArrayBuffer[(String, String)]()
+    var ast = Seq[Seq[NamedExpression]]()
+
+    if (hasGroupBy)
+      ast = logicalPlan.collect { case r: Aggregate => r.aggregateExpressions}
+    else
+      ast = logicalPlan.collect { case r: Project => r.projectList}
+
+    for (aggNode <- ast.head) {
+      if (aggNode.children.nonEmpty) {
+        val aggString = aggNode.children.head.toString().replaceAll("'|\\s", "")
+        val braceIndex = aggString indexOf "("
+        val aggFunc = aggString.substring(0, braceIndex)
+        val aggCol = aggString.substring(braceIndex, aggString.length).replaceAll("\\(|\\)|\\s", "")
+        result.append((aggFunc, aggCol))
+      }
+    }
+    return result
+  }
+
+
+  /*
+  Node type:
+  r: Aggregate => r.groupingExpressions
+ */
+
+  def parseQueryGrouping(logicalPlan: LogicalPlan): Seq[String] ={
+
+    val ast = logicalPlan.collect { case r: Aggregate => r.groupingExpressions}
+
+    if (ast.isEmpty)
+      return Seq()
+
+    val resultAst = ast.head.map(col => col.toString().replaceAll("'|\\s", ""))
+    return resultAst
   }
 
   /*
@@ -110,7 +148,7 @@ object entryPoint {
 
       for (tableSubDir <- tableSubDirs) {
         var table = spark.read.parquet(tableSubDir.toString)
-        table = Eval.assign_subsamples(spark, table, tableDir.getName, table.count(), 100)
+        table = Eval.assignSubsamples(spark, table, tableDir.getName, table.count(), 100)
         table.write.mode("overwrite").parquet("partitioned_with_sid_sf10/" + tableDir.getName + "/" + tableSubDir.getName)
       }
     }
@@ -152,7 +190,7 @@ object entryPoint {
   @return nothing
    */
 
-  def runSingleTableQuery(spark: SparkSession, query: String, params: Map[String, String], agg: (String, String)): Unit ={
+  def runSingleTableQuery(spark: SparkSession, query: String, params: Map[String, String]): Unit ={
     // Sample size, expressed in % of total table size. Only discrete values between 0-100 are possible for now
     val maxIterations: Integer = params("sampleSize").toInt
     val topDir = params("dataDir")
@@ -161,7 +199,7 @@ object entryPoint {
     val errorTol = params("errorTol").toDouble
 
     // Keep track of error at each iteration
-    var currentError = errorTol + 1
+    val currentErrors = ArrayBuffer[Double]()
     var i: Integer = 0
 
     var result = spark.emptyDataFrame
@@ -173,8 +211,10 @@ object entryPoint {
     val files = sortWithSampleNr(getListOfFiles(new File(topDir + tableName + ".parquet"), excludedFiles))
     // Query rewrite depends if the query has a group by clause
     val hasGroupBy:Boolean = query.contains("group by")
+    val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+    val aggregates: ArrayBuffer[(String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
 
-    while (i < maxIterations) {
+    while (i < 1) {
       /*
       Rewrite the query to directly load the parquet file from the query, and add group by sid.
       */
@@ -189,7 +229,9 @@ object entryPoint {
 
 
       val partial = spark.sql(newQuery)
+      partial.show()
 
+      // Accumulate samples
       if ( i == 0)
         result = partial
       else
@@ -198,38 +240,49 @@ object entryPoint {
 
       result.createOrReplaceTempView("result")
 
-      val cols: Seq[String] = result.columns.toSeq.drop(1)
-      val colsString: String = cols.mkString(",")
-      var aggQuery = ""
+      val groupings: Seq[String] = parseQueryGrouping(logicalPlan)
+      val cols: Seq[String] = result.columns.toSeq
+      var aggQuery = "select "
+
+      // Hack to check if a column is an aggregate : check if it contains a bracket (
+      for (col <- cols){
+        aggQuery = aggQuery + (if(col.contains("(")) col.substring(0, col.indexOf("(")) + "(`" +  col + "`) " + " as `" +
+          col + "`" else col) + ","
+      }
+      // Delete the last comma
+      aggQuery = aggQuery.dropRight(1)
 
       if (hasGroupBy)
-        aggQuery = "select " + agg._1 + "(`" +  agg._1 + "(" + agg._2 + ")`) " + " as `" +
-          agg._1 + "(" + agg._2 + ")`, " + colsString + " from result group by " + colsString
+        aggQuery = aggQuery + " from result group by " + groupings.mkString(",")
 
       else
-        aggQuery = "select " + colsString  + agg._1 + "(`" +  agg._1 + "(" + agg._2 + ")`) " + " as `" +
-          agg._1 + "(" + agg._2 + ")`" + " from result"
+        aggQuery = aggQuery + " from result"
 
 
       val resultAggregated = spark.sql(aggQuery)
 
       // Evaluate new result
-      val res = Eval.evaluatePartialResult(result, params, agg, i+1)
-      currentError = res("error").toDouble
+      val res = Eval.evaluatePartialResult(result, resultAggregated, params, aggregates, i+1)
 
-      println("Result : ")
-      // TODO: Collects on driver, use map instead
-      // List of rows. Use row(i) to retrieve value at column i
-      val resultList: List[Row] = resultAggregated.collect().toList
+      for (evalResult <- res) {
+        val groupError = evalResult("error").toDouble
 
-      println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
-      println("Error : " + currentError)
+        println("Result : " + evalResult("est"))
+        println("CI : " + "[" + evalResult("ci_low") + " , " + evalResult("ci_high") + "]")
+        println("Error : " + groupError)
+
+        currentErrors.append(groupError)
+        println("***********************************************")
+      }
+
 
       // Break if accuracy is achieved
-      if (currentError <= errorTol)
+      if (currentErrors.count(_ < errorTol) == currentErrors.length)
         break
 
       i += 1
+
+      println("*****Iteration " + i + " complete*****")
     }
 
   }
@@ -244,25 +297,20 @@ object entryPoint {
   @return nothing
    */
 
+  /*
   // TODO: add group by support
-  def runJoinQuery(spark: SparkSession, query: String, joinInputs: Array[(String, String, String)],
-                     agg: (String, String), params: Map[String, String]){
+  def runJoinQuery(spark: SparkSession, query: String, joinKey: String,
+                   agg: (String, String), params: Map[String, String]){
 
-    // Number of tables
-    val tableCount = joinInputs.length
-    val partitionCount: Double = params("sampleSize").toDouble
     val b = params("b").toInt
     val errorTol = params("errorTol").toDouble
     val topDir = params("dataDir")
 
-    // All results computed so far
-    var runningResult = spark.emptyDataFrame
-
     // Keep track of error at each iteration
     var currentError = errorTol + 1
-    val totalIterations = math.pow(partitionCount, tableCount + 1)
-    // Keep track of join partitions
-    val indices: Array[Int] = Array.fill(tableCount + 1)(1)
+
+    // All results computed so far
+    var runningResult = spark.emptyDataFrame
 
     val Eval = new Evaluation()
 
@@ -274,44 +322,59 @@ object entryPoint {
       filesPerTable += (tableName -> files)
     }
 
-
     var i = 1
+    // TODO: Turn this into an sql function
+    val sidUDF = udf(h _)
 
-    val startTime = System.nanoTime
+    var runningLineitem = spark.emptyDataFrame
+    var runningOrder = spark.emptyDataFrame
 
-    while (i <= 1) {
+    val execTimes = scala.collection.mutable.ListBuffer.empty[Double]
+    val errors = scala.collection.mutable.ListBuffer.empty[Double]
+
+    while (i <= 5) {
+      val startTime = System.nanoTime
       // Modify query and do the join for current batch
       // Bucket index, which bucket we should use
-      var j = 0
-      var newQuery = query
-      for (tableName <- tableNames){
-        /*
-        val fromIndex = newQuery indexOf "from"
-        newQuery = newQuery.substring(0, fromIndex) + "," + table.take(1) + "_sid " +
-          newQuery.substring(fromIndex, newQuery.length)
-         */
-        // Replace agg(col) by col - can only do aggregate after we calculate the new sid
-        newQuery = newQuery.replace(agg._1 + "(" + agg._2 + ")", agg._2)
-        newQuery = newQuery.replaceFirst(" " + tableName, " parquet.`" +
-          filesPerTable(tableName)(indices(j)-1) + "`" + " as " + tableName)
+      var queryWithoutAgg = query.replace(agg._1 + "(" + agg._2 + ")", agg._2)
 
-        j += 1
-      }
+      val newLineitem = spark.read.parquet(filesPerTable("lineitem")(i-1).toString)
+      val newOrder = spark.read.parquet(filesPerTable("order")(i-1).toString)
 
       // Join result without aggregation
-      val partial = spark.sql(newQuery)
+     var partial = spark.emptyDataFrame
 
-      // TODO: Turn this into an sql function
-      val sidUDF = udf(h _)
+      if (i == 1){
+        newLineitem.createOrReplaceTempView("lineitem")
+        newOrder.createOrReplaceTempView("order")
+
+        runningLineitem = newLineitem
+        runningOrder = newOrder
+
+        partial = spark.sql(queryWithoutAgg)
+      }
+      else {
+        runningOrder = runningOrder.union(newOrder)
+
+        newLineitem.createOrReplaceTempView("lineitem")
+        runningOrder.createOrReplaceTempView("order")
+        val partialLineitem = spark.sql(queryWithoutAgg)
+
+        newOrder.createOrReplaceTempView("order")
+        runningLineitem.createOrReplaceTempView("lineitem")
+        runningLineitem = runningLineitem.union(newLineitem)
+        val partialOrder = spark.sql(queryWithoutAgg)
+
+        partial = partialLineitem.union(partialOrder)
+        //partial = spark.sql(queryWithoutAgg)
+      }
 
       // Assign sid's to result tuples
       val sidColumns = partial.schema.fieldNames.filter( col => col.contains("_sid"))
       var resultWithSid = partial.withColumn("sid", sidUDF(lit(b), struct(partial.columns map col: _*),
         array(sidColumns.map(lit(_)): _*)))
-    //  resultWithSid.cache()  // needed, otherwise filter doesnt work
       // Result with newly assigned SIDs
       resultWithSid = resultWithSid.where("sid != 0")
-
 
       // Add new samples to old ones
       if ( i == 1)
@@ -329,38 +392,33 @@ object entryPoint {
       // Evaluate new result
       val res = Eval.evaluatePartialResult(resultGroupedBySid, params, agg, i+1)
       currentError = res("error").toDouble
+      errors += currentError
 
       println("Result :" + res("est"))
       println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
       println("Error : " + currentError)
 
 
-   //   if (currentError <= tol)
-     //   break
-
-       // Update indices
-      for ( k <- 1 to tableCount + 1 ){
-       // time for reset
-       if ( i % math.pow(partitionCount, tableCount + 2 - k) == 0)
-         indices(k-1) = 1
-
-       else if ( i % math.pow(partitionCount, tableCount + 1 - k) == 0)
-         indices(k-1) = indices(k-1) + 1
-      }
+       //   if (currentError <= tol)
+         //   break
 
       i += 1
+
+      val endTime = System.nanoTime
+      val elapsedMs = Math.round((endTime - startTime) / 1e6d)
+      execTimes += elapsedMs
+
+    //  println("Time taken : " + elapsedMs + "ms")
     }
 
-    val endTime = System.nanoTime
-    val elapsedMs = (endTime - startTime) / 1e6d
-    println("Time taken : " + elapsedMs + "ms")
-
+    println(execTimes.mkString(","))
+    println(errors.mkString(","))
 
     //System.in.read();
     //spark.stop();
   }
 
-
+   */
 
   def addColumnIndex(df: DataFrame, spark: SparkSession): DataFrame = {
     return spark.sqlContext.createDataFrame(
