@@ -59,7 +59,7 @@ class PrepareData {
     }
 
     if (!keepOldDir) {
-      val directory = new Directory(new File("delete_test"))
+      val directory = new Directory(new File(dir))
       directory.deleteRecursively()
     }
 
