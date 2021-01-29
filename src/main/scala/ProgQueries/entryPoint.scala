@@ -37,8 +37,9 @@ object entryPoint {
       "alpha" -> "0.05")
 
 
-    val query1 = """select avg(o_totalprice) from lineitem
+    val query1 = """select avg(o_totalprice), o_orderpriority from lineitem
       join order on lineitem.l_orderkey = order.o_orderkey
+      group by o_orderpriority
       """
 
     val query2 = """select avg(o_totalprice), sum(o_totalprice), o_orderstatus from order
@@ -52,16 +53,15 @@ object entryPoint {
 
     //TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
 
-    runSingleTableQuery(spark, query2, params)
-    //runJoinQuery(spark, query1, "orderkey", agg, params)
+    //runSingleTableQuery(spark, query2, params)
+    runJoinQuery(spark, query1, params)
 
-
-  //  partitionBySampleGroup(spark, "data_parquet_sf10", 100)
- //   generate_data_with_sid(spark, "partitioned_sf10", false)
+    spark.stop()
     println("Program finished");
   //  System.in.read();
    // spark.stop();
   }
+
 
   /*
   Node type:
@@ -106,58 +106,6 @@ object entryPoint {
 
     val resultAst = ast.head.map(col => col.toString().replaceAll("'|\\s", ""))
     return resultAst
-  }
-
-  /*
-  Function to break a table into x number of uniform samples. Each sample is stored in its own file.
-
-  @param spark, the current spark instance
-  @param dir, the original file directory
-  @param nOfSamples, number of sample groups into which the original table should be divided
-   */
-  def partitionBySampleGroup(spark: SparkSession, dir: String, nOfSamples: Integer): Unit = {
-    val S = new Samplers()
-    val tableDirs = getListOfFiles(new File(dir), excludedFiles)
-
-    for (tableDir <- tableDirs) {
-      var table = spark.read.parquet(tableDir.toString)
-      table = S.assign_uniform_samples(table, nOfSamples)
-      table.write.partitionBy("unif_sample_group").parquet("partitioned_sf10/" + tableDir.getName)
-    }
-  }
-
-
-  /*
-  Function to assign SIDs to each table.
-  Due to how parquet works, adding a column requires to reading the original data, adding the sid column,
-  and writing the data back to disk in a different directory.
-
-  @param spark, the current Spark session
-  @param dir, the original file directory
-  @param keepOldDir, boolean to indicate whether the original directory should be kept or delete
-  @return nothing
-   */
-  def generateDataWithSid(spark: SparkSession, dir: String, keepOldDir: Boolean): Unit ={
-
-    val Eval = new Evaluation()
-    val tableDirs = getListOfFiles(new File(dir), excludedFiles)
-
-    for (tableDir <- tableDirs) {
-      // Sort the directories based on uniform_sample_group, for convenience
-      val tableSubDirs = sortWithSampleNr(getListOfFiles(new File(tableDir.toString), excludedFiles))
-
-      for (tableSubDir <- tableSubDirs) {
-        var table = spark.read.parquet(tableSubDir.toString)
-        table = Eval.assignSubsamples(spark, table, tableDir.getName, table.count(), 100)
-        table.write.mode("overwrite").parquet("partitioned_with_sid_sf10/" + tableDir.getName + "/" + tableSubDir.getName)
-      }
-    }
-
-    if (!keepOldDir) {
-      val directory = new Directory(new File("delete_test"))
-      directory.deleteRecursively()
-    }
-
   }
 
 
@@ -214,7 +162,7 @@ object entryPoint {
     val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
     val aggregates: ArrayBuffer[(String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
 
-    while (i < 1) {
+    while (i < maxIterations) {
       /*
       Rewrite the query to directly load the parquet file from the query, and add group by sid.
       */
@@ -229,7 +177,6 @@ object entryPoint {
 
 
       val partial = spark.sql(newQuery)
-      partial.show()
 
       // Accumulate samples
       if ( i == 0)
@@ -258,10 +205,10 @@ object entryPoint {
       else
         aggQuery = aggQuery + " from result"
 
-
       val resultAggregated = spark.sql(aggQuery)
 
       // Evaluate new result
+      /*
       val res = Eval.evaluatePartialResult(result, resultAggregated, params, aggregates, i+1)
 
       for (evalResult <- res) {
@@ -275,17 +222,19 @@ object entryPoint {
         println("***********************************************")
       }
 
-
+       */
       // Break if accuracy is achieved
       if (currentErrors.count(_ < errorTol) == currentErrors.length)
         break
 
+      currentErrors.clear()
       i += 1
 
       println("*****Iteration " + i + " complete*****")
     }
 
   }
+
 
   /*
   Method to execute a query on multiple tables progressively.
@@ -297,17 +246,14 @@ object entryPoint {
   @return nothing
    */
 
-  /*
-  // TODO: add group by support
-  def runJoinQuery(spark: SparkSession, query: String, joinKey: String,
-                   agg: (String, String), params: Map[String, String]){
+  def runJoinQuery(spark: SparkSession, query: String, params: Map[String, String]){
 
     val b = params("b").toInt
-    val errorTol = params("errorTol").toDouble
     val topDir = params("dataDir")
-
+    // Error tolerance, i.e. when to stop
+    val errorTol = params("errorTol").toDouble
     // Keep track of error at each iteration
-    var currentError = errorTol + 1
+    val currentErrors = ArrayBuffer[Double]()
 
     // All results computed so far
     var runningResult = spark.emptyDataFrame
@@ -316,91 +262,152 @@ object entryPoint {
 
     val tableNames: Seq[String] = getTables(spark, query)
     var filesPerTable = mutable.Map.empty[String, List[File]]
+    // Query rewrite depends if the query has a group by clause
+    val hasGroupBy:Boolean = query.contains("group by")
+    val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+    val aggregates: ArrayBuffer[(String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
 
     for (tableName <- tableNames){
       val files: List[File] = sortWithSampleNr(getListOfFiles(new File(topDir + tableName + ".parquet"), excludedFiles))
       filesPerTable += (tableName -> files)
     }
 
-    var i = 1
+    var i = 0
     // TODO: Turn this into an sql function
     val sidUDF = udf(h _)
 
-    var runningLineitem = spark.emptyDataFrame
-    var runningOrder = spark.emptyDataFrame
+    val runningTables = Array.ofDim[DataFrame](tableNames.length)
 
     val execTimes = scala.collection.mutable.ListBuffer.empty[Double]
     val errors = scala.collection.mutable.ListBuffer.empty[Double]
 
-    while (i <= 5) {
-      val startTime = System.nanoTime
-      // Modify query and do the join for current batch
-      // Bucket index, which bucket we should use
-      var queryWithoutAgg = query.replace(agg._1 + "(" + agg._2 + ")", agg._2)
+    // remove aggregates and group by
+    var queryWithoutAgg = query
+    for (agg <- aggregates) {
+      queryWithoutAgg = queryWithoutAgg.replace(agg._1 + "(" + agg._2 + ")", agg._2)
+    }
+    // Remove group by, since we removed aggregates
+    if (hasGroupBy)
+      queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("group"))
 
-      val newLineitem = spark.read.parquet(filesPerTable("lineitem")(i-1).toString)
-      val newOrder = spark.read.parquet(filesPerTable("order")(i-1).toString)
+    // Add SID projections for each table in join
+    for (table <- tableNames)
+      queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("from")) + ", " + table.take(1) + "_"+
+        "sid " + queryWithoutAgg.substring(queryWithoutAgg.indexOf("from"), queryWithoutAgg.length)
+
+    val newTableSamples = Array.ofDim[DataFrame](tableNames.length)
+
+    while (i <= 0) {
+      val startTime = System.nanoTime
+
+      for (j <- tableNames.indices){
+        newTableSamples.update(j, spark.read.parquet(filesPerTable(tableNames(j))(i).toString))
+      }
 
       // Join result without aggregation
      var partial = spark.emptyDataFrame
 
-      if (i == 1){
-        newLineitem.createOrReplaceTempView("lineitem")
-        newOrder.createOrReplaceTempView("order")
-
-        runningLineitem = newLineitem
-        runningOrder = newOrder
+      if (i == 0){
+        for (j <- tableNames.indices) {
+          newTableSamples(j).createOrReplaceTempView(tableNames(j))
+          runningTables.update(j,newTableSamples(j))
+        }
 
         partial = spark.sql(queryWithoutAgg)
       }
       else {
-        runningOrder = runningOrder.union(newOrder)
+      //  var partialPerTable = Array.ofDim[DataFrame](tableNames.length)
+        // Join 1
+        for (j <- tableNames.indices){
+          if (j % 2 == 0){
+            newTableSamples(j).createOrReplaceTempView(tableNames(j))
+          } else {
+            runningTables.update(j, runningTables(j).union(newTableSamples(j)))
+            runningTables(j).createOrReplaceTempView(tableNames(j))
+          }
+        }
 
-        newLineitem.createOrReplaceTempView("lineitem")
-        runningOrder.createOrReplaceTempView("order")
-        val partialLineitem = spark.sql(queryWithoutAgg)
+        val partial1 = spark.sql(queryWithoutAgg)
 
-        newOrder.createOrReplaceTempView("order")
-        runningLineitem.createOrReplaceTempView("lineitem")
-        runningLineitem = runningLineitem.union(newLineitem)
-        val partialOrder = spark.sql(queryWithoutAgg)
+        // Join 2
+        for (j <- tableNames.indices){
+          if (j % 2 == 0){
+            runningTables(j).createOrReplaceTempView(tableNames(j))
+            runningTables.update(j, runningTables(j).union(newTableSamples(j)))
+          } else {
+            newTableSamples(j).createOrReplaceTempView(tableNames(j))
+          }
+        }
 
-        partial = partialLineitem.union(partialOrder)
-        //partial = spark.sql(queryWithoutAgg)
+        val partial2 = spark.sql(queryWithoutAgg)
+
+        partial = partial1.union(partial2)
       }
 
+      /*
+      Step 1: Join all tuples, without computing aggregate, so that we can compute their combined sid
+       */
       // Assign sid's to result tuples
       val sidColumns = partial.schema.fieldNames.filter( col => col.contains("_sid"))
       var resultWithSid = partial.withColumn("sid", sidUDF(lit(b), struct(partial.columns map col: _*),
         array(sidColumns.map(lit(_)): _*)))
       // Result with newly assigned SIDs
       resultWithSid = resultWithSid.where("sid != 0")
+      for (table <- tableNames)
+        resultWithSid = resultWithSid.drop(table.take(1) + "_sid")
 
       // Add new samples to old ones
-      if ( i == 1)
+      if ( i == 0)
         runningResult = resultWithSid
       else
         runningResult = runningResult.union(resultWithSid)
 
-      runningResult.createOrReplaceTempView("join_result")
+      runningResult.createOrReplaceTempView("result")
 
-      val aggQuery = "select " + agg._1 + "(" + agg._2 + ")" + " from join_result group by sid"
-      // Result grouped by newly assigned SIDs
-      val resultGroupedBySid = spark.sql(aggQuery)
-      resultGroupedBySid.createOrReplaceTempView("join_result")
+      /*
+      Step 2: Compute the aggregates on the joined tuples, group by sid
+       */
+      val groupings: Seq[String] = parseQueryGrouping(logicalPlan)
+      var cols: Seq[String] = resultWithSid.columns.toSeq
+      var aggQueryWithSid = "select "
+
+      // Hack to check if a column is an aggregate : check if it contains a bracket (
+      for (col <- cols){
+        aggQueryWithSid = aggQueryWithSid + (if(aggregates.map(_._2).contains(col)) aggregates.find(_._2 == col).get._1 + "(" +
+          col + ")" else col) + ","
+      }
+      // Delete the last comma
+      aggQueryWithSid = aggQueryWithSid.dropRight(1)
+
+      if (hasGroupBy)
+        aggQueryWithSid = aggQueryWithSid + " from result group by " + groupings.mkString(",") + ", sid"
+
+      else
+        aggQueryWithSid = aggQueryWithSid + " from result group by sid"
+      var resultAggregatedWithSid = spark.sql(aggQueryWithSid)
+      resultAggregatedWithSid = resultAggregatedWithSid.drop("sid")
+      resultAggregatedWithSid.createOrReplaceTempView("result")
 
       // Evaluate new result
-      val res = Eval.evaluatePartialResult(resultGroupedBySid, params, agg, i+1)
-      currentError = res("error").toDouble
-      errors += currentError
+      // scale factor
+      val sf = 100 / (i+1)
+      val res = Eval.evaluatePartialResult(resultAggregatedWithSid, params, aggregates, sf)
 
-      println("Result :" + res("est"))
-      println("CI : " + "[" + res("ci_low") + " , " + res("ci_high") + "]")
-      println("Error : " + currentError)
+      for (evalResult <- res) {
+        val groupError = evalResult("error").toDouble
+        println("Group : " + evalResult("group"))
+        println("Result : " + evalResult("est"))
+        println("CI : " + "[" + evalResult("ci_low") + " , " + evalResult("ci_high") + "]")
+        println("Error : " + groupError)
 
+        currentErrors.append(groupError)
+        println("***********************************************")
+      }
 
-       //   if (currentError <= tol)
-         //   break
+      if (currentErrors.count(_ < errorTol) == currentErrors.length)
+        break
+
+      currentErrors.clear()
 
       i += 1
 
@@ -418,16 +425,7 @@ object entryPoint {
     //spark.stop();
   }
 
-   */
 
-  def addColumnIndex(df: DataFrame, spark: SparkSession): DataFrame = {
-    return spark.sqlContext.createDataFrame(
-      df.rdd.zipWithIndex.map {
-        case (row, index) => Row.fromSeq(row.toSeq :+ index)
-      },
-      // Create schema for index column
-      StructType(df.schema.fields :+ StructField("index", LongType, false)))
-  }
 
 
   def getTables(spark: SparkSession, query: String): Seq[String] = {
