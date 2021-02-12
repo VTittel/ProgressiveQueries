@@ -1,5 +1,4 @@
 package ProgQueries
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.NamedExpression
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, LogicalPlan, Project}
 import org.apache.spark.sql.functions._
@@ -7,11 +6,9 @@ import org.apache.spark.sql.functions._
 import scala.collection.mutable.{ArrayBuffer, ListBuffer, Map}
 import scala.util.control.Breaks._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
-import org.apache.spark.sql.types._
 
 import scala.collection.mutable
-import java.io.File
-import scala.reflect.io.Directory
+import java.io.{BufferedWriter, File, FileWriter}
 
 
 object entryPoint {
@@ -21,44 +18,33 @@ object entryPoint {
 
     val spark = SparkSession.builder()
       .appName("Spark SQL basic example")
+      //.config("spark.master", "spark://mcs-computeA002:7077")
       .config("spark.master", "local[4]")
-      .config("spark.executor.core", "4")
-      //.config("spark.sql.shuffle.partitions", "4")
-      .config("spark.sql.sources.bucketing.enabled", "true")
-      .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
       .getOrCreate()
 
     spark.sparkContext.setLogLevel("ERROR")
 
     val params = Map("errorTol" -> "2.0",
-      "sampleSize" -> "5",
+      "samplePercent" -> "10",
       "b" -> "100",
       "dataDir" -> "partitioned_with_sid_sf10/",
       "alpha" -> "0.05")
 
 
-    val query1 = """select avg(o_totalprice), o_orderpriority from lineitem
-      join order on lineitem.l_orderkey = order.o_orderkey
-      group by o_orderpriority
-      """
+    val query = BenchQueries.QueryTwo
+  //  TableDefs.load_tpch_tables(spark, "partitioned_with_sid_sf10/")
+   // spark.sql(query).show()
 
-    val query2 = """select avg(o_totalprice), sum(o_totalprice), o_orderstatus from order
-      where o_orderpriority = '5-LOW'
-      group by o_orderstatus
-      """
+    val numTables = getTables(spark, query).length
 
-    // True  query1 - 188869.469330
-    // True answer query2 - 151069.216228
-    // Loads full dataset
+    if (numTables == 1)
+      runSingleTableQuery(spark, query, params, Map[String, Any](), "0")
+    else
+      runMultiTableQuery(spark, query, params, Map[String, Any](), "0")
 
-    //TableDefs.load_tpch_tables(spark: SparkSession, "data_parquet_sf10/": String)
 
-    //runSingleTableQuery(spark, query2, params)
-    runJoinQuery(spark, query1, params)
-
-    spark.stop()
-    println("Program finished");
-  //  System.in.read();
+    println("Program finished")
+   // System.in.read();
    // spark.stop();
   }
 
@@ -68,10 +54,9 @@ object entryPoint {
   r: Aggregate => r.aggregateExpressions
   r: Project => r.projectList works for when there is no group by
    */
+  def parseQueryAggregate(logicalPlan: LogicalPlan, hasGroupBy: Boolean): ArrayBuffer[(String, String, String)] ={
 
-  def parseQueryAggregate(logicalPlan: LogicalPlan, hasGroupBy: Boolean): ArrayBuffer[(String, String)] ={
-
-    val result = ArrayBuffer[(String, String)]()
+    val result = ArrayBuffer[(String, String, String)]()
     var ast = Seq[Seq[NamedExpression]]()
 
     if (hasGroupBy)
@@ -84,8 +69,11 @@ object entryPoint {
         val aggString = aggNode.children.head.toString().replaceAll("'|\\s", "")
         val braceIndex = aggString indexOf "("
         val aggFunc = aggString.substring(0, braceIndex)
-        val aggCol = aggString.substring(braceIndex, aggString.length).replaceAll("\\(|\\)|\\s", "")
-        result.append((aggFunc, aggCol))
+        var aggCol = aggString.substring(braceIndex, aggString.length).replaceAll("\\s", "")
+        aggCol =  aggCol.substring(aggCol.indexOf("(")+1, aggCol.lastIndexOf(")"))
+        val aggNodeStr = aggNode.toString()
+        val alias = aggNodeStr.substring((aggNodeStr indexOf "AS") + 3, aggNodeStr indexOf "#")
+        result.append((aggFunc, aggCol, alias))
       }
     }
     return result
@@ -129,6 +117,7 @@ object entryPoint {
 
   }
 
+
   /*
   Method to execute a query on a single table progressively. Single aggregate functions only
   @param spark, the current spark Session
@@ -138,9 +127,11 @@ object entryPoint {
   @return nothing
    */
 
-  def runSingleTableQuery(spark: SparkSession, query: String, params: Map[String, String]): Unit ={
+  def runSingleTableQuery(spark: SparkSession, query: String, params: Map[String, String],
+                          queryStorage: Map[String,Any], qID: String): Unit ={
+
     // Sample size, expressed in % of total table size. Only discrete values between 0-100 are possible for now
-    val maxIterations: Integer = params("sampleSize").toInt
+    val maxIterations: Integer = params("samplePercent").toInt
     val topDir = params("dataDir")
 
     // Error tolerance, i.e. when to stop
@@ -160,9 +151,13 @@ object entryPoint {
     // Query rewrite depends if the query has a group by clause
     val hasGroupBy:Boolean = query.contains("group by")
     val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
-    val aggregates: ArrayBuffer[(String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
+    val aggregates: ArrayBuffer[(String, String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
 
-    while (i < maxIterations) {
+    val execTimes = scala.collection.mutable.ListBuffer.empty[Double]
+    val errors = ListBuffer.empty[ListBuffer[(String, String, Double)]]
+
+    while (i <= maxIterations) {
+      val startTime = System.nanoTime
       /*
       Rewrite the query to directly load the parquet file from the query, and add group by sid.
       */
@@ -173,7 +168,7 @@ object entryPoint {
           tableName.take(1) + "_sid"
       else
         newQuery = query.replace(" " + tableName, " parquet.`" + files(i) + "`") +
-        "group by " + tableName.take(1) + "_sid"
+        " group by " + tableName.take(1) + "_sid"
 
 
       val partial = spark.sql(newQuery)
@@ -205,33 +200,51 @@ object entryPoint {
       else
         aggQuery = aggQuery + " from result"
 
-      val resultAggregated = spark.sql(aggQuery)
-
       // Evaluate new result
-      /*
-      val res = Eval.evaluatePartialResult(result, resultAggregated, params, aggregates, i+1)
+
+      val res = Eval.evaluatePartialResult(result, params, aggregates, i+1)
+      val errorsForIter = ListBuffer.empty[(String, String, Double)]
+
+      var resultMap = scala.collection.mutable.Map[String,Any]()
 
       for (evalResult <- res) {
+        val agg = evalResult("agg")
         val groupError = evalResult("error").toDouble
-
-        println("Result : " + evalResult("est"))
-        println("CI : " + "[" + evalResult("ci_low") + " , " + evalResult("ci_high") + "]")
-        println("Error : " + groupError)
-
+        val group = evalResult("group")
+        errorsForIter.append((agg, group, groupError))
         currentErrors.append(groupError)
-        println("***********************************************")
+
+        var resultPerGroup = scala.collection.mutable.Map[String,String]()
+        resultPerGroup += ("Estimate" -> evalResult("est"))
+        resultPerGroup += ("CI_low" -> evalResult("ci_low"))
+        resultPerGroup += ("CI_high" -> evalResult("ci_high"))
+        resultPerGroup += ("Error" -> groupError.toString)
+
+        resultMap += ((evalResult("agg"), evalResult("group")).toString() ->
+          scala.util.parsing.json.JSONObject(resultPerGroup.toMap))
       }
 
-       */
+      queryStorage += (qID -> scala.util.parsing.json.JSONObject(resultMap.toMap))
+
       // Break if accuracy is achieved
+      // TODO: Fix for groups that have too little tuples, and thus 0 error
       if (currentErrors.count(_ < errorTol) == currentErrors.length)
         break
 
       currentErrors.clear()
+      errors.append(errorsForIter)
+
       i += 1
+
+      val endTime = System.nanoTime
+      val elapsedMs = Math.round((endTime - startTime) / 1e6d)
+      execTimes += elapsedMs
 
       println("*****Iteration " + i + " complete*****")
     }
+
+    //println(execTimes.mkString(","))
+    //writeErrorsToFile(errors)
 
   }
 
@@ -246,8 +259,11 @@ object entryPoint {
   @return nothing
    */
 
-  def runJoinQuery(spark: SparkSession, query: String, params: Map[String, String]){
+  def runMultiTableQuery(spark: SparkSession, query: String, params: Map[String, String],
+                         queryStorage: Map[String,Any], qID: String): Unit = {
 
+    // Sample size, expressed in % of total table size. Only discrete values between 0-100 are possible for now
+    val maxIterations: Integer = params("samplePercent").toInt
     val b = params("b").toInt
     val topDir = params("dataDir")
     // Error tolerance, i.e. when to stop
@@ -265,11 +281,17 @@ object entryPoint {
     // Query rewrite depends if the query has a group by clause
     val hasGroupBy:Boolean = query.contains("group by")
     val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
-    val aggregates: ArrayBuffer[(String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
+    val aggregates: ArrayBuffer[(String, String, String)] = parseQueryAggregate(logicalPlan, hasGroupBy)
 
+    // TODO: Handle region/nation parquets properly
     for (tableName <- tableNames){
-      val files: List[File] = sortWithSampleNr(getListOfFiles(new File(topDir + tableName + ".parquet"), excludedFiles))
-      filesPerTable += (tableName -> files)
+      if (tableName == "region" || tableName == "nation")
+        filesPerTable += (tableName -> List(new File(topDir + tableName + ".parquet")))
+      else {
+        val files: List[File] = sortWithSampleNr(getListOfFiles(new File(topDir + tableName + ".parquet"), excludedFiles))
+        filesPerTable += (tableName -> files)
+      }
+
     }
 
     var i = 0
@@ -279,16 +301,19 @@ object entryPoint {
     val runningTables = Array.ofDim[DataFrame](tableNames.length)
 
     val execTimes = scala.collection.mutable.ListBuffer.empty[Double]
-    val errors = scala.collection.mutable.ListBuffer.empty[Double]
+    val errors = ListBuffer.empty[ListBuffer[(String, Double)]]
 
     // remove aggregates and group by
+
     var queryWithoutAgg = query
     for (agg <- aggregates) {
-      queryWithoutAgg = queryWithoutAgg.replace(agg._1 + "(" + agg._2 + ")", agg._2)
+      queryWithoutAgg = queryWithoutAgg.replace(agg._1 + "(" + agg._2 + ")" + " as " + agg._3, agg._2 + " as " + agg._3)
     }
+
     // Remove group by, since we removed aggregates
     if (hasGroupBy)
       queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("group"))
+
 
     // Add SID projections for each table in join
     for (table <- tableNames)
@@ -297,15 +322,20 @@ object entryPoint {
 
     val newTableSamples = Array.ofDim[DataFrame](tableNames.length)
 
-    while (i <= 0) {
+    while (i <= maxIterations) {
       val startTime = System.nanoTime
 
+      // For each table, update its entry in newTableSamples with the new sample
       for (j <- tableNames.indices){
-        newTableSamples.update(j, spark.read.parquet(filesPerTable(tableNames(j))(i).toString))
+        val tableName = tableNames(j)
+        if (tableName == "region" || tableName == "nation")
+          newTableSamples.update(j, spark.read.parquet(filesPerTable(tableName).head.toString))
+        else
+          newTableSamples.update(j, spark.read.parquet(filesPerTable(tableName)(i).toString))
       }
 
       // Join result without aggregation
-     var partial = spark.emptyDataFrame
+      var partial = spark.emptyDataFrame
 
       if (i == 0){
         for (j <- tableNames.indices) {
@@ -344,6 +374,7 @@ object entryPoint {
         partial = partial1.union(partial2)
       }
 
+
       /*
       Step 1: Join all tuples, without computing aggregate, so that we can compute their combined sid
        */
@@ -368,13 +399,14 @@ object entryPoint {
       Step 2: Compute the aggregates on the joined tuples, group by sid
        */
       val groupings: Seq[String] = parseQueryGrouping(logicalPlan)
-      var cols: Seq[String] = resultWithSid.columns.toSeq
+      val cols: Seq[String] = resultWithSid.columns.toSeq
       var aggQueryWithSid = "select "
+
 
       // Hack to check if a column is an aggregate : check if it contains a bracket (
       for (col <- cols){
-        aggQueryWithSid = aggQueryWithSid + (if(aggregates.map(_._2).contains(col)) aggregates.find(_._2 == col).get._1 + "(" +
-          col + ")" else col) + ","
+        aggQueryWithSid = aggQueryWithSid + (if(aggregates.map(_._3).contains(col)) aggregates.find(_._3 == col).get._1 + "(" +
+          col + ")" + " as " + col else col) + ","
       }
       // Delete the last comma
       aggQueryWithSid = aggQueryWithSid.dropRight(1)
@@ -384,6 +416,8 @@ object entryPoint {
 
       else
         aggQueryWithSid = aggQueryWithSid + " from result group by sid"
+
+
       var resultAggregatedWithSid = spark.sql(aggQueryWithSid)
       resultAggregatedWithSid = resultAggregatedWithSid.drop("sid")
       resultAggregatedWithSid.createOrReplaceTempView("result")
@@ -392,40 +426,59 @@ object entryPoint {
       // scale factor
       val sf = 100 / (i+1)
       val res = Eval.evaluatePartialResult(resultAggregatedWithSid, params, aggregates, sf)
+      val errorsForIter = ListBuffer.empty[(String, Double)]
+
+      var resultMap = scala.collection.mutable.Map[String,Any]()
 
       for (evalResult <- res) {
+    //    println(evalResult)
         val groupError = evalResult("error").toDouble
-        println("Group : " + evalResult("group"))
-        println("Result : " + evalResult("est"))
-        println("CI : " + "[" + evalResult("ci_low") + " , " + evalResult("ci_high") + "]")
-        println("Error : " + groupError)
-
+        val group = evalResult("group")
+        errorsForIter.append((group, groupError))
         currentErrors.append(groupError)
-        println("***********************************************")
+
+        var resultPerGroup = scala.collection.mutable.Map[String,String]()
+        resultPerGroup += ("Estimate" -> evalResult("est"))
+        resultPerGroup += ("CI_low" -> evalResult("ci_low"))
+        resultPerGroup += ("CI_high" -> evalResult("ci_high"))
+        resultPerGroup += ("Error" -> groupError.toString)
+
+        resultMap += ((evalResult("agg"), evalResult("group")).toString() ->
+          scala.util.parsing.json.JSONObject(resultPerGroup.toMap))
       }
+
+      queryStorage += (qID -> scala.util.parsing.json.JSONObject(resultMap.toMap))
 
       if (currentErrors.count(_ < errorTol) == currentErrors.length)
         break
 
       currentErrors.clear()
+      errors.append(errorsForIter)
 
       i += 1
+
+      println("*****Iteration " + i + " complete*****")
 
       val endTime = System.nanoTime
       val elapsedMs = Math.round((endTime - startTime) / 1e6d)
       execTimes += elapsedMs
-
-    //  println("Time taken : " + elapsedMs + "ms")
     }
 
-    println(execTimes.mkString(","))
-    println(errors.mkString(","))
+    //println(execTimes.mkString(","))
+    //writeErrorsToFile(errors)
 
-    //System.in.read();
-    //spark.stop();
   }
 
 
+  def writeErrorsToFile(errors : ListBuffer[ListBuffer[(String, String, Double)]]): Unit ={
+    val file = new File("spark-warehouse/errors.txt")
+    val bw = new BufferedWriter(new FileWriter(file))
+    for (error <- errors) {
+      bw.write(error.mkString(" "))
+      bw.write("\n")
+    }
+    bw.close()
+  }
 
 
   def getTables(spark: SparkSession, query: String): Seq[String] = {

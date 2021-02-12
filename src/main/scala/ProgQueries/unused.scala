@@ -552,6 +552,18 @@ object unused {
 
      */
 
+  /*
+  def addColumnIndex(df: DataFrame, spark: SparkSession): DataFrame = {
+    return spark.sqlContext.createDataFrame(
+      df.rdd.zipWithIndex.map {
+        case (row, index) => Row.fromSeq(row.toSeq :+ index)
+      },
+      // Create schema for index column
+      StructType(df.schema.fields :+ StructField("index", LongType, false)))
+  }
+
+   */
+
 }
 
 

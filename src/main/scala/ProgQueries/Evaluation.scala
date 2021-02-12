@@ -41,7 +41,7 @@ class Evaluation extends Serializable {
   Function to evaluate (report error metrics) single and multi table queries
    */
   def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String],
-                            aggregates: ArrayBuffer[(String, String)],
+                            aggregates: ArrayBuffer[(String, String, String)],
                             sf: Integer): ArrayBuffer[Map[String, String]] = {
 
     val alpha = params("alpha").toDouble
@@ -49,9 +49,9 @@ class Evaluation extends Serializable {
     var n = 0
     val errorsArray = ArrayBuffer[mutable.Map[String, String]]()
 
-    val aggStrings = aggregates.map(t => t._1 + "(" + t._2 + ")")
+    // TODO: Handle aliases for aggregates
+    val aggStrings = aggregates.map(t => t._3)
     val projections: Seq[String] = (resultDF.schema.fieldNames.toSet).filterNot(aggStrings.toSet).map(i => i.toString).toSeq
-
     // Calculate subsamples for each aggregate and store in an array
     for (agg <- aggStrings){
       val subsamples = resultDF.select(agg, projections: _*).rdd.map(row => row.toSeq.map(_.toString))
@@ -80,7 +80,8 @@ class Evaluation extends Serializable {
         val cb = getConfBounds(alpha, aggValue, grouped(groupKeys), n, ns)
         val error = ((cb._1 - cb._2) / 2) / (((cb._1 + cb._2) / 2)) * 100
 
-        errorsArray.append(mutable.Map("group" -> groupKeys.mkString(","),
+        errorsArray.append(mutable.Map("agg" -> agg,
+          "group" -> groupKeys.mkString(","),
           "error" -> BigDecimal(error).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
           "ci_low" -> BigDecimal(cb._2).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
           "ci_high" -> BigDecimal(cb._1).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,

@@ -9,7 +9,7 @@ class PrepareData {
 
   def prepare(spark: SparkSession, path: String, nOfSamples: Integer, keepOldDir: Boolean): Unit = {
     partitionBySampleGroup(spark, path, nOfSamples)
-    generateDataWithSid(spark, "partitioned_sf10", keepOldDir)
+    generateDataWithSid(spark, "partitioned_sf150", keepOldDir)
   }
 
 
@@ -27,7 +27,7 @@ class PrepareData {
     for (tableDir <- tableDirs) {
       var table = spark.read.parquet(tableDir.toString)
       table = S.assign_uniform_samples(table, nOfSamples)
-      table.write.partitionBy("unif_sample_group").parquet("partitioned_sf10/" + tableDir.getName)
+      table.write.partitionBy("unif_sample_group").parquet("partitioned_sf150/" + tableDir.getName)
     }
   }
 
@@ -54,7 +54,7 @@ class PrepareData {
       for (tableSubDir <- tableSubDirs) {
         var table = spark.read.parquet(tableSubDir.toString)
         table = Eval.assignSubsamples(spark, table, tableDir.getName, table.count(), 100)
-        table.write.mode("overwrite").parquet("partitioned_with_sid_sf10/" + tableDir.getName + "/" + tableSubDir.getName)
+        table.write.mode("overwrite").parquet("partitioned_with_sid_sf150/" + tableDir.getName + "/" + tableSubDir.getName)
       }
     }
 
