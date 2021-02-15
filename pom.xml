@@ -31,4 +31,31 @@
 		</dependency>
 
     </dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.scala-tools</groupId>
+				<artifactId>maven-scala-plugin</artifactId>
+				<version>2.15.2</version>
+				<executions>
+					<execution>
+						<goals>
+							<goal>compile</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<includes>
+						<include>**/entryPoint.scala</include>
+						<include>**/Samplers.scala</include>
+						<include>**/Evaluation.scala</include>
+						<include>**/BenchQueries.scala</include>
+						<include>**/ServerDriver.scala</include>
+					</includes>
+				</configuration>
+			</plugin>
+
+		</plugins>
+	</build>
 </project>
