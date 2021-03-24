@@ -128,18 +128,23 @@ object ServerDriver {
 
   def runQuery(spark: SparkSession, query: String, qID: String): Unit ={
     //TODO: Take params from user
+    /*
     val params = Map("errorTol" -> "2.0",
       "samplePercent" -> "10",
       "b" -> "100",
       "dataDir" -> "partitioned_with_sid_sf10/",
       "alpha" -> "0.05")
 
+    val queryFormatted = query.stripMargin.toLowerCase()
+
     val numTables = getTables(spark, query).length
 
     if (numTables == 1) {
-      entryPoint.runSingleTableQuery(spark, query, params, queryStorage, qID)
+      entryPoint.runSingleTableQuery(spark, queryFormatted, params, queryStorage, qID)
     } else
-      entryPoint.runMultiTableQuery(spark, query, params, queryStorage, qID)
+      entryPoint.runMultiTableQuery(spark, queryFormatted, params, queryStorage, qID)
+
+     */
 
   }
 }

@@ -7,9 +7,17 @@ import scala.reflect.io.Directory
 
 class PrepareData {
 
-  def prepare(spark: SparkSession, path: String, nOfSamples: Integer, keepOldDir: Boolean): Unit = {
-    partitionBySampleGroup(spark, path, nOfSamples)
-    generateDataWithSid(spark, "partitioned_sf150", keepOldDir)
+  def prepare(spark: SparkSession, path: String, nOfSamples: Integer, keepOldDir: Boolean, sampleType: String): Unit = {
+   // partitionBySampleGroup(spark, path, nOfSamples)
+    if (sampleType.equals("univ")) {
+      val topTableDirs = getListOfFiles(new File(path), excludedFiles)
+      for (topTableDir <- topTableDirs) {
+        generateDataWithSid(spark,topTableDir.toString, "partitioned_with_sid_sf10_univ/", keepOldDir)
+      }
+    }
+   // else
+    //  generateDataWithSid(spark, "partitioned_sf10_univ", keepOldDir)
+
   }
 
 
@@ -26,9 +34,35 @@ class PrepareData {
 
     for (tableDir <- tableDirs) {
       var table = spark.read.parquet(tableDir.toString)
-      table = S.assign_uniform_samples(table, nOfSamples)
-      table.write.partitionBy("unif_sample_group").parquet("partitioned_sf150/" + tableDir.getName)
+      table = S.uniformSampler(table, nOfSamples)
+      table.write.partitionBy("unif_sample_group").parquet("partitioned_sf10/" + tableDir.getName)
     }
+  }
+
+
+  def generateDataWithSid(spark: SparkSession, dir: String, newDir: String, keepOldDir: Boolean): Unit ={
+
+    val Eval = new Evaluation()
+    val tableDirs = getListOfFiles(new File(dir), excludedFiles)
+    val topFile = new File(dir)
+
+    for (tableDir <- tableDirs) {
+      // Sort the directories based on uniform_sample_group, for convenience
+      val tableSubDirs = sortWithSampleNr(getListOfFiles(new File(tableDir.toString), excludedFiles))
+
+      for (tableSubDir <- tableSubDirs) {
+        var table = spark.read.parquet(tableSubDir.toString)
+        table = Eval.assignSubsamples(spark, table, topFile.getName, table.count(), 100)
+        val newPath = newDir + topFile.getName + "/" + tableDir.getName + "/" + tableSubDir.getName
+        table.write.mode("overwrite").parquet(newPath)
+      }
+    }
+
+    if (!keepOldDir) {
+      val directory = new Directory(new File(dir))
+      directory.deleteRecursively()
+    }
+
   }
 
 
@@ -42,19 +76,22 @@ class PrepareData {
   @param keepOldDir, boolean to indicate whether the original directory should be kept or delete
   @return nothing
    */
+  /*
   def generateDataWithSid(spark: SparkSession, dir: String, keepOldDir: Boolean): Unit ={
 
     val Eval = new Evaluation()
     val tableDirs = getListOfFiles(new File(dir), excludedFiles)
 
     for (tableDir <- tableDirs) {
+      println(tableDir)
       // Sort the directories based on uniform_sample_group, for convenience
       val tableSubDirs = sortWithSampleNr(getListOfFiles(new File(tableDir.toString), excludedFiles))
 
       for (tableSubDir <- tableSubDirs) {
         var table = spark.read.parquet(tableSubDir.toString)
         table = Eval.assignSubsamples(spark, table, tableDir.getName, table.count(), 100)
-        table.write.mode("overwrite").parquet("partitioned_with_sid_sf150/" + tableDir.getName + "/" + tableSubDir.getName)
+      //  println("partitioned_with_sid_sf10_univ/" + tableDir.getName + "/" + tableSubDir.getName)
+       // table.write.mode("overwrite").parquet("partitioned_with_sid_sf10_univ/" + tableDir.getName + "/" + tableSubDir.getName)
       }
     }
 
@@ -65,4 +102,6 @@ class PrepareData {
 
   }
 
+
+   */
 }

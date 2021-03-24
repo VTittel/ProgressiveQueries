@@ -564,6 +564,273 @@ object unused {
 
    */
 
+  /*
+    def extractColumnsFromQuery(query: String): Array[String] ={
+    val fromIndex = query indexOf "from"
+    var cols = query.substring(7, fromIndex).trim.split(",")
+
+    cols = cols.map(_.replaceAll("avg|sum|count|\\(|\\)|\\s", ""))
+
+    return cols
+
+  }
+   */
+
+  /*
+def runMultiTableQuery(spark: SparkSession, query: String, params: Map[String, String],
+                       queryStorage: Map[String,Any], qID: String,
+                       sampleChoices: Map[String, (String, String)]): Unit = {
+
+
+  // Sample size, expressed in % of total table size. Only discrete values between 0-100 are possible for now
+  val maxIterations: Integer = params("samplePercent").toInt
+  val b = params("b").toInt
+  val dataDir = params("dataDir")
+  val warehouseDir = params("warehouseDir")
+  // Error tolerance, i.e. when to stop
+  val errorTol = params("errorTol").toDouble
+  // Keep track of error at each iteration
+  val currentErrors = ArrayBuffer[Double]()
+
+  val qp = new QueryParser()
+  val Eval = new Evaluation()
+  val spGen = new SamplingPlanGenerator
+  //Do online universe sampling
+ // spGen.makeUnivSamples(spark, sampleChoices, 5, dataDir)
+
+  // All results computed so far
+  var runningResult = spark.emptyDataFrame
+  val tableNames = sampleChoices.keys.toList
+  var filesPerTable = Map.empty[String, List[File]]
+
+  // Query rewrite depends if the query has a group by clause
+  val hasGroupBy:Boolean = query.contains("group by")
+  val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+  val aggregates: ArrayBuffer[(String, String, String)] = qp.parseQueryAggregate(logicalPlan, hasGroupBy)
+
+  // TODO: Handle region/nation parquets properly
+  for((k,v) <- sampleChoices){
+    if (k == "region" || k == "nation") { // Dont sample small tables
+      filesPerTable += (k -> List(new File(dataDir + k + ".parquet")))
+    } else if (v._1 == "unif") { // Use existing uniform samples
+      val files: List[File] = sortWithSampleNr(getListOfFiles(new File(dataDir + k + ".parquet"), excludedFiles))
+      filesPerTable += (k -> files)
+    } else if (v._1 == "univ"){ // Collect universe samples
+      val warehousedSamples = getListOfFiles(new File(warehouseDir), excludedFiles).map(_.toString)
+        .filter(_.contains(k + "_" + v._2)).head
+
+      val files: List[File] = sortWithSampleNr(getListOfFiles(new File(warehousedSamples), excludedFiles))
+      filesPerTable += (k -> files)
+    }
+  }
+
+
+  var i = 0
+  // TODO: Turn this into an sql function
+  val sidUDF = udf(h _)
+
+  val runningTables = Array.ofDim[DataFrame](sampleChoices.size)
+
+  val execTimes = scala.collection.mutable.ListBuffer.empty[Double]
+  val errors = ListBuffer.empty[ListBuffer[(String, String, String, Double)]]
+  val estimates = ListBuffer.empty[ListBuffer[(String, Double)]]
+
+  // remove aggregates and group by
+  var queryWithoutAgg = query
+  for (agg <- aggregates) {
+    queryWithoutAgg = queryWithoutAgg.replace(agg._1 + "(" + agg._2 + ")" + " as " + agg._3, agg._2 + " as " + agg._3)
+  }
+
+  // Remove group by, since we removed aggregates
+  if (hasGroupBy)
+    queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("group"))
+
+
+  // Add SID projections for each table in join
+  for (table <- tableNames)
+    queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("from")) + ", " + table.take(1) + "_"+
+      "sid " + queryWithoutAgg.substring(queryWithoutAgg.indexOf("from"), queryWithoutAgg.length)
+
+  val newTableSamples = Array.ofDim[DataFrame](tableNames.length)
+  println(queryWithoutAgg)
+
+  while (i < 5) {
+    val startTime = System.nanoTime
+
+    // For each table, update its entry in newTableSamples with the new sample
+    for (j <- tableNames.indices){
+      val tableName = tableNames(j)
+      if (tableName == "region" || tableName == "nation")
+        newTableSamples.update(j, spark.read.parquet(filesPerTable(tableName).head.toString))
+      else
+        newTableSamples.update(j, spark.read.parquet(filesPerTable(tableName)(i).toString))
+    }
+
+    // Join result without aggregation
+    var partial = spark.emptyDataFrame
+    val prevSampler = ""
+
+    if (i == 0){
+      for (j <- tableNames.indices) {
+        newTableSamples(j).createOrReplaceTempView(tableNames(j))
+        runningTables.update(j,newTableSamples(j))
+      }
+
+      partial = spark.sql(queryWithoutAgg)
+    }
+    else {
+    //  var partialPerTable = Array.ofDim[DataFrame](tableNames.length)
+      // Join 1
+      for (j <- tableNames.indices){
+        // check if join is between two universe samples
+        val currentSampler = sampleChoices(tableNames(j))._1
+        if (j % 2 == 0){
+          newTableSamples(j).createOrReplaceTempView(tableNames(j))
+        } else {
+          runningTables.update(j, runningTables(j).union(newTableSamples(j)))
+          runningTables(j).createOrReplaceTempView(tableNames(j))
+        }
+      }
+
+      val partial1 = spark.sql(queryWithoutAgg)
+
+      // Join 2
+      for (j <- tableNames.indices){
+        if (j % 2 == 0){
+          runningTables(j).createOrReplaceTempView(tableNames(j))
+          runningTables.update(j, runningTables(j).union(newTableSamples(j)))
+        } else {
+          newTableSamples(j).createOrReplaceTempView(tableNames(j))
+        }
+      }
+
+      val partial2 = spark.sql(queryWithoutAgg)
+
+      partial = partial1.union(partial2)
+    }
+
+    partial.show()
+
+    /*
+    Step 1: Join all tuples, without computing aggregate, so that we can compute their combined sid
+     */
+    // Assign sid's to result tuples
+    val sidColumns = partial.schema.fieldNames.filter( col => col.contains("_sid"))
+    var resultWithSid = partial.withColumn("sid", sidUDF(lit(b), struct(partial.columns map col: _*),
+      array(sidColumns.map(lit(_)): _*)))
+    // Result with newly assigned SIDs
+   //resultWithSid = resultWithSid.where("sid != 0")
+    for (table <- tableNames)
+      resultWithSid = resultWithSid.drop(table.take(1) + "_sid")
+
+    // Add new samples to old ones
+    if ( i == 0)
+      runningResult = resultWithSid
+    else
+      runningResult = runningResult.union(resultWithSid)
+
+    runningResult.createOrReplaceTempView("result")
+
+    /*
+    Step 2: Compute the aggregates on the joined tuples, group by sid
+     */
+    val groupings: Seq[String] = qp.parseQueryGrouping(logicalPlan)
+    val cols: Seq[String] = resultWithSid.columns.toSeq
+    var aggQueryWithSid = "select "
+
+
+    // Hack to check if a column is an aggregate : check if it contains a bracket (
+    for (col <- cols){
+      aggQueryWithSid = aggQueryWithSid + (if(aggregates.map(_._3).contains(col)) aggregates.find(_._3 == col).get._1 + "(" +
+        col + ")" + " as " + col else col) + ","
+    }
+    // Delete the last comma
+    aggQueryWithSid = aggQueryWithSid.dropRight(1)
+
+    if (hasGroupBy)
+      aggQueryWithSid = aggQueryWithSid + " from result group by " + groupings.mkString(",") + ", sid"
+
+    else
+      aggQueryWithSid = aggQueryWithSid + " from result group by sid"
+
+
+    var resultAggregatedWithSid = spark.sql(aggQueryWithSid)
+    resultAggregatedWithSid = resultAggregatedWithSid.drop("sid")
+    resultAggregatedWithSid.createOrReplaceTempView("result")
+
+    // Evaluate new result
+    // scale factor
+    // TODO: adjust scale factor according to sampling scheme
+   // val samplingFrac = math.pow((i.toDouble+1.0) / 100, tableNames.size.toDouble)
+    val samplingFrac = ((i.toDouble+1.0) * 10.0) / 100 * 0.01
+    val sf = 1.0 / samplingFrac
+
+    val res = Eval.evaluatePartialResult(resultAggregatedWithSid, params, aggregates, sf)
+    val errorsForIter = ListBuffer.empty[(String, String, String, Double)]
+
+    var resultMap = scala.collection.mutable.Map[String,Any]()
+
+    val estForIter = ListBuffer.empty[(String, Double)]
+
+    for (evalResult <- res) {
+      val agg = evalResult("agg")
+      val est = evalResult("est")
+      val groupError = evalResult("error").toDouble
+      val group = evalResult("group")
+      errorsForIter.append((agg, group, est, groupError))
+      currentErrors.append(groupError)
+
+      var resultPerGroup = scala.collection.mutable.Map[String,String]()
+      resultPerGroup += ("Estimate" -> evalResult("est"))
+      resultPerGroup += ("CI_low" -> evalResult("ci_low"))
+      resultPerGroup += ("CI_high" -> evalResult("ci_high"))
+      resultPerGroup += ("Error" -> groupError.toString)
+
+      resultMap += ((evalResult("agg"), evalResult("group")).toString() ->
+        scala.util.parsing.json.JSONObject(resultPerGroup.toMap))
+
+      estForIter.append((group, est.toDouble))
+      println(est)
+      if (group == "O,0") {
+        val err = (est.toDouble - 1089215873201.8919) / 1089215873201.8919
+        println(agg, group, err)
+      } else if (group == "F,0"){
+        val err = (est.toDouble - 1089898832735.0447) / 1089898832735.0447
+        println(agg, group, err)
+      }
+    }
+
+    queryStorage += (qID -> scala.util.parsing.json.JSONObject(resultMap.toMap))
+
+   // if (currentErrors.count(_ < errorTol) == currentErrors.length)
+    //  break
+
+    currentErrors.clear()
+    estForIter.clear()
+    errors.append(errorsForIter)
+    estimates.append(estForIter)
+
+    i += 1
+
+    //println("*****Iteration " + i + " complete*****")
+
+    val endTime = System.nanoTime
+    val elapsedMs = Math.round((endTime - startTime) / 1e6d)
+    execTimes += elapsedMs
+  }
+
+
+
+  println(estimates)
+  println(execTimes.mkString(","))
+  //writeEstToFile(estimates)
+ // writeErrorsToFile(errors)
+  val directory = new Directory(new File(warehouseDir))
+  directory.deleteRecursively()
+
+}
+ */
+
 }
 
 

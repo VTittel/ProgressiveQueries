@@ -42,7 +42,7 @@ class Evaluation extends Serializable {
    */
   def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String],
                             aggregates: ArrayBuffer[(String, String, String)],
-                            sf: Integer): ArrayBuffer[Map[String, String]] = {
+                            sf: Double): ArrayBuffer[Map[String, String]] = {
 
     val alpha = params("alpha").toDouble
     val subsampPerAgg = mutable.Map[String, Array[Seq[String]]]()

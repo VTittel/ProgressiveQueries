@@ -1,4 +1,4 @@
-package ProgQueries
+package Query
 
 import scala.collection.mutable.ArrayBuffer
 
