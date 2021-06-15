@@ -19,7 +19,11 @@ project/plugins/project/
 .idea
 
 # Project specific
-partitioned_with_sid_sf10
-data_parquet_sf10
+PartitionedWithSkew_sf10
+data_parquet
 spark-warehouse
+errors
+out
 .cache-main
+Statistics
+Statistics_full

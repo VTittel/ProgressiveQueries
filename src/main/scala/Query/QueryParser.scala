@@ -12,17 +12,19 @@ class QueryParser {
   Node type:
   r: Aggregate => r.condition for join key, r.collectLeaves for tables
   */
-  def parseQueryJoin(spark: SparkSession, query: String): ArrayBuffer[(String, String, String)] ={
+  def parseQueryJoin(spark: SparkSession, query: String): ArrayBuffer[(String, String, String, String)] ={
     val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
 
-    val result = ArrayBuffer[(String, String, String)]()
+    val result = ArrayBuffer[(String, String, String, String)]()
 
     val ast = logicalPlan.collect {case r: Join => (r.condition.get.collectLeaves(),r.collectLeaves())}
     var i = 0
 
     for (aggNode <- ast.reverse) {
-      val joinCond = aggNode._1.head.toString()
-      val joinKey = joinCond.substring(joinCond.indexOf("_")+1, joinCond.length)
+      val joinCondLeft = aggNode._1.head.toString()
+      val joinKeyLeft = joinCondLeft.substring(joinCondLeft.indexOf(".")+1, joinCondLeft.length)
+      val joinCondRight = aggNode._1(1).toString()
+      val joinKeyRight = joinCondRight.substring(joinCondRight.indexOf(".")+1, joinCondRight.length)
 
       val joinTables = aggNode._2
       var leftTable = joinTables(i).toString()
@@ -30,12 +32,12 @@ class QueryParser {
       var rightTable = joinTables(i+1).toString()
       rightTable = rightTable.substring(rightTable.indexOf("`")+1, rightTable.lastIndexOf("`"))
 
-      result.append((leftTable, rightTable, joinKey))
+      result.append((leftTable, rightTable, joinKeyLeft, joinKeyRight))
 
       i += 1
     }
 
-    return result
+    result
   }
 
 
@@ -84,5 +86,14 @@ class QueryParser {
     val resultAst = ast.head.map(col => col.toString().replaceAll("'|\\s", ""))
     return resultAst
   }
+
+
+  /* Extract tables from query */
+  def getTables(spark: SparkSession, query: String): Seq[String] = {
+    val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+    import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
+    logicalPlan.collect { case r: UnresolvedRelation => r.tableName}
+  }
+
 
 }

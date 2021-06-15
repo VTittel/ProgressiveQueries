@@ -91,8 +91,8 @@ object CreateTPCHparquet {
         StructField("o_clerk", StringType, true) ::
         StructField("o_shippriority", IntegerType, true) ::
         StructField("o_comment", StringType, true) :: Nil)
-    val order = sparkSession.sqlContext.read.format("csv").schema(orderSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "orders.tbl");
-    sparkSession.sqlContext.createDataFrame(order.rdd, orderSchema).createOrReplaceTempView("orders");
+    val order = sparkSession.sqlContext.read.format("csv").schema(orderSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "order.tbl");
+    sparkSession.sqlContext.createDataFrame(order.rdd, orderSchema).createOrReplaceTempView("order");
     order.write.format("parquet").save(PARENT_DIR + "data_parquet/order.parquet");
     // ============================================================> PART
     val partSchema = StructType(

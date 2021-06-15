@@ -13,7 +13,7 @@ object TableDefs {
         StructField("n_name", StringType, true) ::
         StructField("n_regionkey", LongType, true) ::
         StructField("n_comment", StringType, true) :: Nil)
-    val nation = sparkSession.read.parquet(DATA_DIR + "nation.parquet");
+    val nation = sparkSession.read.parquet(DATA_DIR + "nation");
     sparkSession.sqlContext.createDataFrame(nation.rdd, nationSchema).createOrReplaceTempView("nation");
     // ============================================================> CUSTOMER
     val customerSchema = StructType(
@@ -25,7 +25,7 @@ object TableDefs {
         StructField("c_acctbal", DecimalType(12, 2), true) ::
         StructField("c_mktsegment", StringType, true) ::
         StructField("c_comment", StringType, true) :: Nil);
-    val customer = sparkSession.read.parquet(DATA_DIR + "customer.parquet");
+    val customer = sparkSession.read.parquet(DATA_DIR + "customer");
     sparkSession.sqlContext.createDataFrame(customer.rdd, customerSchema).createOrReplaceTempView("customer");
     // ============================================================> LINEITEM
     val lineitemSampledSchema = StructType(
@@ -46,7 +46,7 @@ object TableDefs {
         StructField("l_shipmode", StringType, true) :: // 14
         StructField("l_comment", StringType, true) :: // 15
         StructField("lsratio", DoubleType, true) :: Nil); // 16
-    val lineitem = sparkSession.read.parquet(DATA_DIR + "lineitem.parquet");
+    val lineitem = sparkSession.read.parquet(DATA_DIR + "lineitem");
     sparkSession.sqlContext.createDataFrame(lineitem.rdd, lineitemSampledSchema).createOrReplaceTempView("lineitem");
     // ============================================================> ORDER
     val orderSchema = StructType(
@@ -59,7 +59,7 @@ object TableDefs {
         StructField("o_clerk", StringType, true) ::
         StructField("o_shippriority", IntegerType, true) ::
         StructField("o_comment", StringType, true) :: Nil)
-    val order = sparkSession.read.parquet(DATA_DIR + "order.parquet");
+    val order = sparkSession.read.parquet(DATA_DIR + "order");
     sparkSession.sqlContext.createDataFrame(order.rdd, orderSchema).createOrReplaceTempView("order");
     // ============================================================> PART
     val partSchema = StructType(
@@ -72,7 +72,7 @@ object TableDefs {
         StructField("p_container", StringType, true) ::
         StructField("p_retailprice", DecimalType(12, 2), true) ::
         StructField("p_comment", StringType, true) :: Nil)
-    val part = sparkSession.read.parquet(DATA_DIR + "part.parquet");
+    val part = sparkSession.read.parquet(DATA_DIR + "part");
     sparkSession.sqlContext.createDataFrame(part.rdd, partSchema).createOrReplaceTempView("part")
     // ============================================================> PARTSUPP
     val partsuppSchema = StructType(
@@ -81,14 +81,14 @@ object TableDefs {
         StructField("ps_availqty", IntegerType, true) ::
         StructField("ps_supplycost", DecimalType(12, 2), true) ::
         StructField("ps_comment", StringType, true) :: Nil)
-    val partsupp = sparkSession.read.parquet(DATA_DIR + "partsupp.parquet");
+    val partsupp = sparkSession.read.parquet(DATA_DIR + "partsupp");
     sparkSession.sqlContext.createDataFrame(partsupp.rdd, partsuppSchema).createOrReplaceTempView("partsupp");
     // ============================================================> REGION
     val regionSchema = StructType(
       StructField("r_regionkey", LongType, true) ::
         StructField("r_name", StringType, true) ::
         StructField("r_comment", StringType, true) :: Nil)
-    val region = sparkSession.read.parquet(DATA_DIR + "region.parquet");
+    val region = sparkSession.read.parquet(DATA_DIR + "region");
     sparkSession.sqlContext.createDataFrame(region.rdd, regionSchema).createOrReplaceTempView("region");
     // ============================================================> SUPPLIER
     val supplierSchema = StructType(
@@ -100,19 +100,8 @@ object TableDefs {
         StructField("s_acctbal", DecimalType(12, 2), true) ::
         StructField("s_comment", StringType, true) :: Nil)
 
-    val supplier = sparkSession.read.parquet(DATA_DIR + "supplier.parquet");
+    val supplier = sparkSession.read.parquet(DATA_DIR + "supplier");
     sparkSession.sqlContext.createDataFrame(supplier.rdd, supplierSchema).createOrReplaceTempView("supplier");
-  }
-
-  def load_tpch_table_samples(sparkSession: SparkSession, DATA_DIR: String) = {
-
-    val lineitem_sample = sparkSession.read.parquet(DATA_DIR + "lineitem_sample.parquet")
-    val orders_sample = sparkSession.read.parquet(DATA_DIR + "orders_sample.parquet")
-    val customer_sample = sparkSession.read.parquet(DATA_DIR + "customer_sample.parquet")
-
-    lineitem_sample.createOrReplaceTempView("lineitem_sample")
-    orders_sample.createOrReplaceTempView("orders_sample")
-    customer_sample.createOrReplaceTempView("customer_sample")
   }
 
 }
