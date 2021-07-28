@@ -1,8 +1,4 @@
 package ProgQueries
-
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.sql.functions.{col, udf}
-
 import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, ListBuffer, Map}
 /*
@@ -17,82 +13,59 @@ class Evaluator extends Serializable {
    */
 
   // TODO: Fix scaling
-  def evaluatePartialResult(resultDF: DataFrame, params: Map[String, String],
-                            aggregates: ArrayBuffer[(String, String, String)],
-                            sf: Double): ArrayBuffer[Map[String, String]] = {
+  def evaluatePartialResult(temp: Map[(String, Seq[String]), Map[Int, (Double, Double)]],
+                            results: Map[(String, Seq[String]), Double],
+                            totalCount: Double, sf: Double): mutable.Map[(String, String), Map[String, String]] = {
 
-    val alpha = params("alpha").toDouble
-    val subsampPerAgg = mutable.Map[String, Array[Seq[String]]]()
-    var n = 0
-    val errorsArray = ArrayBuffer[mutable.Map[String, String]]()
+    val alpha = 0.05
+    val ns = math.pow(totalCount, 0.5)
 
+    // (agg, group) -> (error, ci...
+    val result = mutable.Map[(String, String), Map[String, String]]()
 
-    // TODO: Handle aliases for aggregates
-    val aggStrings = aggregates.map(t => t._3)
-    var projections: Seq[String] = (resultDF.schema.fieldNames.toSet).filterNot(aggStrings.toSet).map(i => i.toString).toSeq
-    if (!projections.contains("sid"))
-      projections = projections :+ "sid"
+    for ((aggGroup, value) <- results){
+      var aggValue = value
+      if (aggGroup._1.contains("sum") || aggGroup._1.contains("count")){
+        aggValue = value / sf
+      }
 
-    // Calculate subsamples for each aggregate and store in an array
-    // length of row - hack, needed for subsample extraction
-    var rowLen = 0
+      val estimates: ListBuffer[Double] = ListBuffer()
 
-    for (agg <- aggStrings){
-      val subsamples = resultDF.select(agg, projections: _*).rdd.map(row => row.toSeq.map(_.toString))
-        .collect()
-
-      n = subsamples.length
-      rowLen = subsamples.head.length
-
-      subsampPerAgg += (agg -> subsamples)
-    }
-
-    val subsampPerAggNoSid = subsampPerAgg.map{case (k,v) => k -> v.map(x => x.dropRight(1))}
-
-    val ns = math.pow(n, 0.5)
-
-    for (agg <- aggStrings){
-      val grouped = subsampPerAggNoSid(agg).groupBy(_.tail).map{case (k,v) => k -> v.map(_.head.toDouble)}
-
-      var aggValue = 0.0
-
-      grouped.keys.foreach( groupKeys => {
-        // maps group to (estimate, subsample)
-        val groupedSid = subsampPerAgg(agg).groupBy(_.slice(1, rowLen-1)).map{case (k,v) =>
-          k -> v.map(x => (x.head.toDouble, x.last.toDouble))}
-
-        // filter out groups with sid = 0
-        val estimatesWithSid = groupedSid(groupKeys)
-        val estimates = estimatesWithSid.filter(_._2 > 0.0).map(x => x._1)
-
-        if (agg.contains("avg")) {
-          aggValue = grouped(groupKeys).sum / grouped(groupKeys).length
-        } else if (agg.contains("sum")){
-          aggValue = grouped(groupKeys).sum * sf
-        } else if (agg.contains("count")){
-          aggValue = grouped(groupKeys).sum * sf
+      for ((k,v) <- temp(aggGroup)){
+        if (k > 0){
+          val subsampSf = 1.0
+          val scaledAgg = if (aggGroup._1.contains("sum") || aggGroup._1.contains("count")) v._2 * subsampSf else v._2
+          estimates.append(scaledAgg)
         }
+      }
 
-        val cb = getConfBounds(alpha, aggValue, estimates, n, ns)
-        val error = ((cb._1 - cb._2) / 2) / ((cb._1 + cb._2) / 2) * 100
+      var cb = (0.0, 0.0)
+      var error = 1.0
 
-        errorsArray.append(mutable.Map("agg" -> agg,
-          "group" -> groupKeys.mkString(","),
-          "error" -> BigDecimal(error).setScale(10, BigDecimal.RoundingMode.HALF_UP).toString,
+      val scaledAgg = if (aggGroup._1.contains("sum") || aggGroup._1.contains("count")) aggValue * sf else aggValue
+
+      if (estimates.nonEmpty){
+        cb = getConfBounds(alpha, aggValue, estimates, totalCount, ns)
+        error = ((cb._1 - cb._2) / 2) / ((cb._1 + cb._2) / 2) * 100
+      }
+
+      error = if (aggGroup._1.contains("avg")) error / 100.0 else error
+
+      result += ((aggGroup._1, aggGroup._2.mkString(",")) ->
+        mutable.Map("error" -> BigDecimal(error).setScale(10, BigDecimal.RoundingMode.HALF_UP).toString,
           "ci_low" -> BigDecimal(cb._2).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
           "ci_high" -> BigDecimal(cb._1).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
-          "est" -> BigDecimal(aggValue).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString))
-      })
-
+          "est" -> BigDecimal(scaledAgg).setScale(2, BigDecimal.RoundingMode.HALF_UP).toString,
+          "count" -> totalCount.toString))
     }
 
-    errorsArray
+    result
 
   }
 
 
-  def getConfBounds(alpha: Double, est: Double, estimates: Array[Double],
-                      n: Integer, ns: Double): (Double, Double) = {
+  def getConfBounds(alpha: Double, est: Double, estimates: ListBuffer[Double],
+                      n: Double, ns: Double): (Double, Double) = {
 
     val diffs = new Array[Double](estimates.length)
 
@@ -102,8 +75,8 @@ class Evaluator extends Serializable {
 
     val lowerQ = getQuantile(diffs, alpha)
     val upperQ = getQuantile(diffs, 1 - alpha)
-    val lowerBound = est - lowerQ * (math.sqrt(ns / n))
-    val upperBound = est - upperQ * (math.sqrt(ns / n))
+    val lowerBound = est - lowerQ * math.sqrt(ns / n)
+    val upperBound = est - upperQ * math.sqrt(ns / n)
 
     (lowerBound, upperBound)
   }

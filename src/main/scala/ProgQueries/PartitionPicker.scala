@@ -1,5 +1,0 @@
-package ProgQueries
-
-class PartitionPicker {
-
-}

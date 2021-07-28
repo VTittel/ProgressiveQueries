@@ -12,7 +12,7 @@ object CreateTPCHparquet {
   def main(args: Array[String]) {
     val sparkSession = SparkSession.builder()
       .appName("Spark SQL basic example")
-      //      .config("spark.master", "spark://mcs-computeA002:7077")
+    //  .config("spark.master", "spark://mcs-computeA005:7077")
       .config("spark.master", "local[4]")
       .getOrCreate()
 
@@ -34,7 +34,7 @@ object CreateTPCHparquet {
 
     var PARENT_DIR = ""
 
-    val DATA_DIR = "tables/";
+    val DATA_DIR = "raw_tables/";
     // ============================================================> NATION
     val nationSchema = StructType(
       StructField("n_nationkey", LongType, true) ::
@@ -44,7 +44,7 @@ object CreateTPCHparquet {
     //        val nation = sparkSession.read.parquet(DATA_DIR + "nation.parquet");
     val nation = sparkSession.sqlContext.read.format("csv").schema(nationSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "nation.tbl");
     sparkSession.sqlContext.createDataFrame(nation.rdd, nationSchema).createOrReplaceTempView("nation");
-    nation.write.format("parquet").save(PARENT_DIR + "data_parquet/nation.parquet");
+    nation.write.format("parquet").save(PARENT_DIR + "data_parquet/nation");
     // ============================================================> CUSTOMER
     val customerSchema = StructType(
       StructField("c_custkey", LongType, true) ::
@@ -57,7 +57,7 @@ object CreateTPCHparquet {
         StructField("c_comment", StringType, true) :: Nil);
     val customer = sparkSession.sqlContext.read.format("csv").schema(customerSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "customer.tbl");
     sparkSession.sqlContext.createDataFrame(customer.rdd, customerSchema).createOrReplaceTempView("customer");
-    customer.write.format("parquet").save(PARENT_DIR + "data_parquet/customer.parquet");
+    customer.write.format("parquet").save(PARENT_DIR + "data_parquet/customer");
     // ============================================================> LINEITEM
     val lineitemSchema = StructType(
       StructField("l_orderkey", LongType, true) :: // 0
@@ -79,7 +79,7 @@ object CreateTPCHparquet {
         StructField("lsratio", DoubleType, true) :: Nil); // 16
     val lineitem = sparkSession.sqlContext.read.format("csv").schema(lineitemSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "lineitem.tbl");
     sparkSession.sqlContext.createDataFrame(lineitem.rdd, lineitemSchema).createOrReplaceTempView("lineitem");
-    lineitem.write.format("parquet").save(PARENT_DIR + "data_parquet/lineitem.parquet");
+    lineitem.write.format("parquet").save(PARENT_DIR + "data_parquet/lineitem");
     // ============================================================> ORDER
     val orderSchema = StructType(
       StructField("o_orderkey", LongType, true) ::
@@ -93,7 +93,7 @@ object CreateTPCHparquet {
         StructField("o_comment", StringType, true) :: Nil)
     val order = sparkSession.sqlContext.read.format("csv").schema(orderSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "order.tbl");
     sparkSession.sqlContext.createDataFrame(order.rdd, orderSchema).createOrReplaceTempView("order");
-    order.write.format("parquet").save(PARENT_DIR + "data_parquet/order.parquet");
+    order.write.format("parquet").save(PARENT_DIR + "data_parquet/order");
     // ============================================================> PART
     val partSchema = StructType(
       StructField("p_partkey", LongType, true) ::
@@ -107,7 +107,8 @@ object CreateTPCHparquet {
         StructField("p_comment", StringType, true) :: Nil)
     val part = sparkSession.sqlContext.read.format("csv").schema(partSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "part.tbl");
     sparkSession.sqlContext.createDataFrame(part.rdd, partSchema).createOrReplaceTempView("part");
-    part.write.format("parquet").save(PARENT_DIR + "data_parquet/part.parquet");
+    part.write.format("parquet").save(PARENT_DIR + "data_parquet/part");
+
     // ============================================================> PARTSUPP
     val partsuppSchema = StructType(
       StructField("ps_partkey", LongType, true) ::
@@ -117,7 +118,7 @@ object CreateTPCHparquet {
         StructField("ps_comment", StringType, true) :: Nil)
     val partsupp = sparkSession.sqlContext.read.format("csv").schema(partsuppSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "partsupp.tbl");
     sparkSession.sqlContext.createDataFrame(partsupp.rdd, partsuppSchema).createOrReplaceTempView("partsupp");
-    partsupp.write.format("parquet").save(PARENT_DIR + "data_parquet/partsupp.parquet");
+    partsupp.write.format("parquet").save(PARENT_DIR + "data_parquet/partsupp");
     // ============================================================> REGION
     val regionSchema = StructType(
       StructField("r_regionkey", LongType, true) ::
@@ -125,7 +126,7 @@ object CreateTPCHparquet {
         StructField("r_comment", StringType, true) :: Nil)
     val region = sparkSession.sqlContext.read.format("csv").schema(regionSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "region.tbl");
     sparkSession.sqlContext.createDataFrame(region.rdd, regionSchema).createOrReplaceTempView("region");
-    region.write.format("parquet").save(PARENT_DIR + "data_parquet/region.parquet");
+    region.write.format("parquet").save(PARENT_DIR + "data_parquet/region");
     // ============================================================> SUPPLIER
     val supplierSchema = StructType(
       StructField("s_suppkey", LongType, true) ::
@@ -137,6 +138,6 @@ object CreateTPCHparquet {
         StructField("s_comment", StringType, true) :: Nil)
     val supplier = sparkSession.sqlContext.read.format("csv").schema(supplierSchema).option("nullValue", "null").option("delimiter", "|").load(DATA_DIR + "supplier.tbl");
     sparkSession.sqlContext.createDataFrame(supplier.rdd, supplierSchema).createOrReplaceTempView("supplier");
-    supplier.write.format("parquet").save(PARENT_DIR + "data_parquet/supplier.parquet");
+    supplier.write.format("parquet").save(PARENT_DIR + "data_parquet/supplier");
   }
 }

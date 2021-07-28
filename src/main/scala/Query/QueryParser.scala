@@ -2,11 +2,70 @@ package Query
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.NamedExpression
-import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Join, LogicalPlan, Project}
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project}
+import org.apache.spark.sql.catalyst.expressions._
 
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 class QueryParser {
+
+  def stringifyExpressions(expression: Expression): Seq[String] = {
+    expression match{
+      case And(l,r) => (l,r) match {
+        case (gte: GreaterThanOrEqual,lte: LessThanOrEqual) => Seq(s"""${gte.left.toString} between ${gte.right.toString} and ${lte.right.toString}""")
+        case (_,_) => Seq(l,r).flatMap(stringifyExpressions)
+      }
+      case Or(l,r) => Seq(Seq(l,r).flatMap(stringifyExpressions).mkString("(",") OR (", ")"))
+      case eq: EqualTo => Seq(s"${eq.left.toString} = ${eq.right.toString}")
+      case inn: IsNotNull => Seq(s"${inn.child.toString} is not null")
+      case p: Predicate => Seq(p.toString)
+    }
+  }
+
+
+  def parseQueryFilter(spark: SparkSession, query: String): Unit ={
+    val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+
+    // Outer listbuffer contains groups of expressions. Each group has its own listbuffer
+    val exprs: ListBuffer[ListBuffer[(String, String, String)]] = ListBuffer()
+    val topLevelOp = logicalPlan.collect {case f: Filter => f.condition.prettyName}.head
+    // if toplevelop is AND or OR, that means we have multiple clauses in where, otherwise only one
+   // if (!(topLevelOp == "or" || topLevelOp == "and"))
+
+
+    /*
+
+val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
+
+val clauses: ListBuffer[ListBuffer[(String, String, String)]] = ListBuffer()
+val intraOps: ListBuffer[String] = ListBuffer()
+val topNode = logicalPlan.collect {case f: Filter => f.condition}.head
+// if toplevelop is AND or OR, that means we have multiple clauses in where, otherwise only one
+if (!(topNode.prettyName == "or" || topNode.prettyName == "and")) {
+  val leaves = topNode.collectLeaves()
+  val temp: ListBuffer[(String, String, String)] = ListBuffer()
+  // left operator right
+  temp.append((leaves(0).toString(), leaves(1).toString(), topNode.prettyName))
+  clauses.append(temp)
+} else {
+  val predicates: Seq[Expression] = logicalPlan.collect{case f: Filter =>
+    f.condition.productIterator.flatMap{
+      case o:Predicate => Seq(o)
+      case Or(l,r) => Seq(l,r)
+      case And(l,r) => Seq(l,r)
+    }
+  }.toList.flatten
+
+  println(predicates)
+
+  //for (pred <- predicates) {
+ //   if (topNode.prettyName == "or" || topNode.prettyName == "and") {
+
+  //  }
+}
+
+ */
+  }
 
   /*
   Node type:
@@ -68,7 +127,7 @@ class QueryParser {
         result.append((aggFunc, aggCol, alias))
       }
     }
-    return result
+    result
   }
 
 

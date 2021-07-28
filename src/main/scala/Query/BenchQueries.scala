@@ -4,99 +4,179 @@ object BenchQueries extends Enumeration {
 
   // Single table
 
-  val QueryOne =
-    """SELECT L_RETURNFLAG, L_LINESTATUS, SUM(L_QUANTITY) AS SUM_QTY, AVG(L_EXTENDEDPRICE) AS AVG_PRICE,
-      |AVG(L_DISCOUNT) AS AVG_DISC, COUNT(*) AS COUNT_ORDER,
-      |IF (1+ floor ( rand () * 1000) <= 100, 1 + FLOOR(RAND()*100), 0) AS SID
-      |FROM LINEITEM
-      |GROUP BY L_RETURNFLAG, L_LINESTATUS, SID""".stripMargin.toLowerCase()
+  val Query1 =
+    """select
+      |l_returnflag,
+      |l_linestatus,
+      |sum(l_quantity) as sum_qty,
+      |sum(l_extendedprice) as sum_base_price,
+      |sum(l_extendedprice*(1-l_discount)) as sum_disc_price,
+      |avg(l_quantity) as avg_qty,
+      |avg(l_extendedprice) as avg_price,
+      |avg(l_discount) as avg_disc
+      |from
+      |lineitem
+      |where
+      |l_shipdate < '1998-12-01'
+      |group by
+      |l_returnflag,
+      |l_linestatus""".stripMargin
 
 
-  val QueryTwoSid =
-    """SELECT L_LINESTATUS, SUM((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS SUM_REVENUE, O_SHIPPRIORITY,
-      |IF (1+ floor ( rand () * 500) <= 50, 1 + FLOOR(RAND()*50), 0) AS O_SID,
-      |IF (1+ floor ( rand () * 500) <= 50, 1 + FLOOR(RAND()*50), 0) AS L_SID
-      |FROM ORDER JOIN LINEITEM ON ORDER.O_ORDERKEY = LINEITEM.L_ORDERKEY
-      |GROUP BY L_LINESTATUS, O_SHIPPRIORITY""".stripMargin.toLowerCase()
+  val Query3 =
+    """select
+      |sum(l_extendedprice*(1-l_discount)) as sum_revenue,
+      |o_orderdate,
+      |o_shippriority,
+      |count(o_orderdate) as count_tuples,
+      |1 + floor(rand()*100) as c_sid,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as l_sid
+      |from
+      |customer join order on customer.c_custkey = order.o_custkey
+      |join lineitem on order.o_orderkey = lineitem.l_orderkey
+      |where
+      |c_mktsegment = 'FURNITURE'
+      |and o_orderdate < '1995-03-15'
+      |and l_shipdate > '1995-03-17'
+      |group by
+      |o_orderdate,
+      |o_shippriority""".stripMargin
 
-  val QueryTwo =
-    """SELECT L_LINESTATUS, SUM((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS SUM_REVENUE, O_SHIPPRIORITY
-      |FROM ORDER JOIN LINEITEM ON ORDER.O_ORDERKEY = LINEITEM.L_ORDERKEY
-      |GROUP BY L_LINESTATUS, O_SHIPPRIORITY""".stripMargin.toLowerCase()
+  val Query4 =
+    """
+      |select
+      |o_orderpriority,
+      |count(l_commitdate) as count_orders,
+      |count(l_commitdate) as count_tuples,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as l_sid
+      |from order join lineitem on
+      |order.o_orderkey = lineitem.l_orderkey
+      |where l_commitdate < '1996-01-06'
+      |group by
+      |o_orderpriority
+      |""".stripMargin
 
+  val Query5 =
+    """
+      |select
+      |sum(l_extendedprice*(1-l_discount)) as sum_revenue,
+      |n_name,
+      |count(o_orderdate) as count_tuples,
+      |1 + floor(rand()*100) as c_sid,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as l_sid,
+      |1 + floor(rand()*100) as s_sid,
+      |1 + floor(rand()*100) as n_sid,
+      |1 + floor(rand()*100) as r_sid
+      |from customer join order on customer.c_custkey = order.o_custkey
+      |join lineitem on order.o_orderkey = lineitem.l_orderkey
+      |join supplier on lineitem.l_suppkey = supplier.s_suppkey
+      |join nation on supplier.s_nationkey = nation.n_nationkey
+      |join region on nation.n_regionkey = region.r_regionkey
+      |where
+      |r_name = 'AMERICA'
+      |and o_orderdate < '1994-01-01'
+      |group by n_name
+      |""".stripMargin
 
-  // 4 table join
-  val QueryThree =
-    """SELECT C_MKTSEGMENT, SUM((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS SUM_REVENUE
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON LINEITEM.L_ORDERKEY = ORDER.O_ORDERKEY
-      |JOIN SUPPLIER ON LINEITEM.L_SUPPKEY = SUPPLIER.S_SUPPKEY
-      |GROUP BY C_MKTSEGMENT""".stripMargin.toLowerCase()
+  val Query10 =
+    """
+      |select /*+ BROADCAST(nation) */
+      |sum(l_extendedprice*(1-l_discount)) as sum_revenue,
+      |n_name,
+      |l_shipmode,
+      |c_nationkey,
+      |count(o_orderdate) as count_tuples,
+      |1 + floor(rand()*100) as c_sid,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as l_sid,
+      |1 + floor(rand()*100) as n_sid
+      |from nation join customer on nation.n_nationkey = customer.c_nationkey
+      |join order on customer.c_custkey = order.o_custkey
+      |join lineitem on order.o_orderkey = lineitem.l_orderkey
+      |where o_orderdate > '1993-10-01'
+      |and l_returnflag = 'R'
+      |group by
+      |n_name,
+      |c_nationkey,
+      |l_shipmode
+      |""".stripMargin
 
+  val Query12 =
+    """
+      |select
+      |l_shipmode,
+      |sum(o_totalprice) as sum_price,
+      |avg(o_totalprice) as avg_price,
+      |count(o_orderdate) as count_tuples,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as l_sid
+      |from order join lineitem on order.o_orderkey = lineitem.l_orderkey
+      |where
+      |l_receiptdate > '1994-01-01'
+      |group by
+      |l_shipmode
+      |""".stripMargin
 
-  // Single table, no group by
-  val QueryFour =
-    """SELECT SUM(L_EXTENDEDPRICE*L_DISCOUNT) AS SUM_REVENUE
-      |FROM LINEITEM
-      |WHERE L_SHIPDATE >= '1994-01-01'
-      |AND L_DISCOUNT BETWEEN .06 - 0.01 AND .06 + 0.01 AND L_QUANTITY < 24""".stripMargin.toLowerCase()
+  val Query16 =
+    """
+      |select
+      |p_type,
+      |count(ps_suppkey) as count_supplier,
+      |sum(p_retailprice) as sum_retail_price,
+      |count(p_partkey) as count_tuples,
+      |1 + floor(rand()*100) as ps_sid,
+      |1 + floor(rand()*100) as p_sid
+      |from partsupp join part on partsupp.ps_partkey = part.p_partkey
+      |where
+      |ps_availqty > 1000
+      |and ps_availqty < 1200
+      |group by
+      |p_type
+      |""".stripMargin
 
+  val Query19 =
+    """
+      |select
+      |sum(l_extendedprice*(1-l_discount)) as sum_revenue,
+      |avg(l_extendedprice) as avg_price,
+      |l_linenumber,
+      |count(l_partkey) as count_tuples,
+      |1 + floor(rand()*100) as l_sid,
+      |1 + floor(rand()*100) as p_sid
+      |from lineitem join part on lineitem.l_partkey = part.p_partkey
+      |where
+      |p_brand = 'Brand#12'
+      |or
+      |p_container = 'MED BAG'
+      |or
+      |l_quantity > 10
+      |group by l_linenumber
+      |""".stripMargin
 
-  // 3 table join on same key
-  val QueryFive =
-    """SELECT SUM(L_EXTENDEDPRICE) AS SUM_YEARLY FROM PART
-      |JOIN PARTSUPP ON PART.P_PARTKEY = PARTSUPP.PS_PARTKEY
-      |JOIN LINEITEM ON PARTSUPP.PS_PARTKEY = LINEITEM.L_PARTKEY
-      |WHERE L_QUANTITY < (SELECT 0.2*AVG(L_QUANTITY) FROM LINEITEM WHERE L_PARTKEY = P_PARTKEY)"""
-      .stripMargin.toLowerCase()
-
-  // 3 table
-  val QuerySix =
-    """SELECT SUM((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS SUM_REVENUE, O_ORDERSTATUS, O_ORDERPRIORITY
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON LINEITEM.L_ORDERKEY = ORDER.O_ORDERKEY
-      |WHERE O_ORDERDATE < '1995-03-15'
-      |GROUP BY O_ORDERPRIORITY, O_ORDERSTATUS""".stripMargin.toLowerCase()
-
-  // Rare groups
-  val QuerySeven =
-    """SELECT SUM((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS SUM_REVENUE, O_ORDERDATE
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON LINEITEM.L_ORDERKEY = ORDER.O_ORDERKEY
-      |WHERE O_ORDERDATE < '1995-03-15'
-      |GROUP BY O_ORDERDATE""".stripMargin.toLowerCase()
-
-  val QueryEight =
-    """SELECT (L_EXTENDEDPRICE*(1-L_DISCOUNT)) AS SUM_REVENUE, O_ORDERSTATUS, O_ORDERPRIORITY, O_ORDERDATE
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON ORDER.O_ORDERKEY = LINEITEM.L_ORDERKEY""".stripMargin.toLowerCase()
-
-  // Rare groups
-  val QuerySevenAvg =
-    """SELECT AVG((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS AVG_REVENUE, O_ORDERDATE
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON ORDER.O_ORDERKEY = LINEITEM.L_ORDERKEY
-      |WHERE O_ORDERDATE < '1995-03-15'
-      |GROUP BY O_ORDERDATE""".stripMargin.toLowerCase()
-
-  val QuerySixAvg =
-    """SELECT AVG((L_EXTENDEDPRICE*(1-L_DISCOUNT))) AS AVG_REVENUE, O_ORDERSTATUS, O_ORDERPRIORITY
-      |FROM CUSTOMER JOIN ORDER ON CUSTOMER.C_CUSTKEY = ORDER.O_CUSTKEY
-      |JOIN LINEITEM ON LINEITEM.L_ORDERKEY = ORDER.O_ORDERKEY
-      |WHERE O_ORDERDATE < '1995-03-15'
-      |GROUP BY O_ORDERPRIORITY, O_ORDERSTATUS""".stripMargin.toLowerCase()
-
-  val QueryFiveAvg =
-    """SELECT AVG(L_EXTENDEDPRICE) AS AVG_YEARLY FROM PART
-      |JOIN PARTSUPP ON PART.P_PARTKEY = PARTSUPP.PS_PARTKEY
-      |JOIN LINEITEM ON PARTSUPP.PS_PARTKEY = LINEITEM.L_PARTKEY
-      |GROUP BY PART.P_CONTAINER"""
-      .stripMargin.toLowerCase()
-
-  val QueryFiveTemp =
-    """SELECT L_EXTENDEDPRICE AS AVG_YEARLY, P_CONTAINER FROM PART
-      |JOIN PARTSUPP ON PART.P_PARTKEY = PARTSUPP.PS_PARTKEY
-      |JOIN LINEITEM ON PARTSUPP.PS_PARTKEY = LINEITEM.L_PARTKEY"""
-      .stripMargin.toLowerCase()
+  val Query21 =
+    """
+      |select
+      |s_name,
+      |avg(l_discount) as avg_disc,
+      |count(l_orderkey) as count_numwait,
+      |count(l_orderkey) as count_tuples,
+      |1 + floor(rand()*100) as l_sid,
+      |1 + floor(rand()*100) as s_sid,
+      |1 + floor(rand()*100) as o_sid,
+      |1 + floor(rand()*100) as n_sid
+      |from
+      |order join lineitem on order.o_orderkey = lineitem.l_orderkey
+      |join supplier on lineitem.l_suppkey = supplier.s_suppkey
+      |join nation on s_nationkey = n_nationkey
+      |where
+      |n_name = 'SAUDI ARABIA'
+      |or n_name = 'AMERICA'
+      |or n_name = 'BRAZIL'
+      |group by
+      |s_name
+      |""".stripMargin
 
 }

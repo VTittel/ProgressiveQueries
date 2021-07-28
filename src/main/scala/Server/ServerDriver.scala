@@ -4,11 +4,9 @@ import org.eclipse.jetty.server.handler.{AbstractHandler, ContextHandler, Handle
 import org.eclipse.jetty.server.{Request, Server}
 
 import javax.servlet.http.{HttpServletRequest, HttpServletResponse}
-import java.util.concurrent.Executors
-import concurrent.{ExecutionContext, ExecutionContextExecutor, Future}
+import java.util.concurrent.{Callable, Executors, FutureTask}
+import concurrent.{ExecutionContext, ExecutionContextExecutor, Future, Promise, future}
 import java.util.Date
-import ProgQueries.entryPoint
-import ProgQueries.entryPoint.{getTables, runMultiTableQuery, runSingleTableQuery}
 import org.apache.spark.sql.SparkSession
 
 import scala.util.parsing.json._
@@ -33,10 +31,37 @@ object ServerDriver {
 
   var queryStorage: mutable.Map[String, Any] = scala.collection.mutable.Map[String,Any]()
 
+  var futureStorage: mutable.Map[String, Any] = scala.collection.mutable.Map[String,Any]()
 
   class QueryRunner(spark: SparkSession) extends AbstractHandler {
 
-    override def handle(target: String, req: Request, httpReq: HttpServletRequest, httpRes: HttpServletResponse): Unit = {
+    class Cancellable[T](executionContext: ExecutionContext, todo: => T) {
+
+      private val jf: FutureTask[T] = new FutureTask[T](
+        new Callable[T] {
+          override def call(): T = todo
+        }
+      )
+
+      executionContext.execute(jf)
+
+      implicit val _: ExecutionContext = executionContext
+
+      val future: Future[T] = Future {
+        jf.get
+      }
+
+      def cancel(): Unit = jf.cancel(true)
+
+    }
+
+    object Cancellable {
+      def apply[T](todo: => T)(implicit executionContext: ExecutionContext): Cancellable[T] =
+        new Cancellable[T](executionContext, todo)
+    }
+
+    override def handle(target: String, req: Request, httpReq: HttpServletRequest, httpRes: HttpServletResponse)
+    : Unit = {
 
       var qID = util.hashing.MurmurHash3.stringHash(new Date().getTime.toString)
       if (qID < 0)
@@ -58,13 +83,14 @@ object ServerDriver {
 
       implicit val context: ExecutionContextExecutor = ExecutionContext.fromExecutor(Executors.newSingleThreadExecutor())
 
-      val f = Future {
+      var future = Cancellable{
         runQuery(spark, query, qID.toString)
         println("Running asynchronously on another thread")
       }
 
     }
   }
+
 
 
   class QueryResult() extends AbstractHandler {
@@ -74,7 +100,6 @@ object ServerDriver {
                         httpReq: HttpServletRequest,
                         httpRes: HttpServletResponse): Unit = {
 
-
       httpRes.setContentType("text/html")
       httpRes.setStatus(HttpServletResponse.SC_OK)
       val qID = req.getParameter("qID")
@@ -82,6 +107,32 @@ object ServerDriver {
       req.setHandled(true)
 
     }
+  }
+
+  def startSparkServer(): SparkSession = {
+    val spark = SparkSession.builder()
+      .appName("Spark SQL basic example")
+      //.config("spark.master", "spark://mcs-computeA002:7077")
+      .config("spark.master", "local[4]")
+      .getOrCreate()
+
+    spark.sparkContext.setLogLevel("ERROR")
+
+    return spark
+  }
+
+
+  def runQuery(spark: SparkSession, query: String, qID: String): Unit ={
+    //TODO: Take params from user
+    val params = Map("errorTol" -> "2.0",
+      "samplePercent" -> "10",
+      "b" -> "100",
+      "dataDir" -> "data_parquet_sf1//",
+      "alpha" -> "0.05")
+
+    val queryFormatted = query.stripMargin
+    SingleTableQueryExecutorTest.runSingleTableQuery(spark, queryFormatted, params("dataDir"), params("alpha").toDouble,
+      queryStorage, qID)
   }
 
 
@@ -113,38 +164,4 @@ object ServerDriver {
   }
 
 
-  def startSparkServer(): SparkSession = {
-    val spark = SparkSession.builder()
-      .appName("Spark SQL basic example")
-      //.config("spark.master", "spark://mcs-computeA002:7077")
-      .config("spark.master", "local[4]")
-      .getOrCreate()
-
-    spark.sparkContext.setLogLevel("ERROR")
-
-    return spark
-  }
-
-
-  def runQuery(spark: SparkSession, query: String, qID: String): Unit ={
-    //TODO: Take params from user
-    /*
-    val params = Map("errorTol" -> "2.0",
-      "samplePercent" -> "10",
-      "b" -> "100",
-      "dataDir" -> "partitioned_with_sid_sf10/",
-      "alpha" -> "0.05")
-
-    val queryFormatted = query.stripMargin.toLowerCase()
-
-    val numTables = getTables(spark, query).length
-
-    if (numTables == 1) {
-      entryPoint.runSingleTableQuery(spark, queryFormatted, params, queryStorage, qID)
-    } else
-      entryPoint.runMultiTableQuery(spark, queryFormatted, params, queryStorage, qID)
-
-     */
-
-  }
 }

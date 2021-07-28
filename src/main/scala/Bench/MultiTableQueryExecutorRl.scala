@@ -1,10 +1,12 @@
-package ProgQueries
+package Bench
+
 
 import FileHandlers.StatisticsBuilder
 import PartitionLogic.{JoinGraphV2, PartitionPickerMultiTable}
+import ProgQueries.{ResultCombiner, Samplers}
 import ProgQueries.entryPoint.{excludedFiles, getListOfFiles2, sample}
 import Query.{BenchQueries, QueryParser}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
 import org.apache.spark.sql.functions.{array, col, lit, struct, udf}
 
 import java.io.File
@@ -12,7 +14,7 @@ import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, ListBuffer, Map}
 
 
-object MultiTableQueryExecutor {
+object MultiTableQueryExecutorRl {
 
   /*
   Method to execute a query on multiple tables progressively.
@@ -27,15 +29,10 @@ object MultiTableQueryExecutor {
   // total number of partitions sampled so far
   val partitionCounts: Map[String, Int] = Map()
 
-  def runMultiTableQuery(spark: SparkSession, query: String, dataDir: String, errorTol: Double,
+  def runMultiTableQuery(spark: SparkSession, query: String, dataDir: String,
                          exactResult: Map[List[String], List[(String, String)]],
-                         statBuilder : StatisticsBuilder,
-                         queryStorage: Map[String,Any], qID: String,
-                         exprs: Map[String, List[List[(String, String, String, String)]]],
-                         innerConnector: String, outerConnector: String,
-                         predCols: Map[String, List[String]],
-                         groupingCols: Map[String, List[String]],
-                         isRandom: Boolean):  ListBuffer[(Double, Double)] = {
+                        // table -> (sampler, key)
+                         tableSamplers: Map[String, (String, String)]):  ListBuffer[(Double, Double)] = {
 
 
     // Keep track of error at each iteration
@@ -45,13 +42,7 @@ object MultiTableQueryExecutor {
 
 
     val tableNames = qp.getTables(spark, query)
-    var p = 0.0
-    var totalNumPartitions = 0.0
-    for (table <- tableNames) {
-      val nump = getListOfFiles2(dataDir + table, excludedFiles).size
-      p += math.ceil(nump * 0.01)
-      totalNumPartitions += nump.toDouble
-    }
+    var p = 0.01
 
     // Query rewrite depends if the query has a group by clause
     val logicalPlan = spark.sessionState.sqlParser.parsePlan(query)
@@ -67,6 +58,11 @@ object MultiTableQueryExecutor {
     var queryWithoutAgg = query
 
     for (agg <- aggregates) {
+      // special distinct case
+      if (agg._3 == "count_supplier"){
+        queryWithoutAgg = queryWithoutAgg.replace("count(distinct(ps_suppkey)) as count_supplier",
+          "ps_suppkey as count_supplier")
+      }
       if (agg._2.head.toString == "(" && agg._2.last.toString == ")")
         queryWithoutAgg = queryWithoutAgg.replace(agg._1 + agg._2 + " as " + agg._3, agg._2 + " as " + agg._3)
       else
@@ -78,83 +74,44 @@ object MultiTableQueryExecutor {
     if (hasGroupBy)
       queryWithoutAgg = queryWithoutAgg.substring(0, queryWithoutAgg.indexOf("group"))
 
-    val joinGraph = new JoinGraphV2()
-
-    val pp = new PartitionPickerMultiTable(spark, joinGraph, dataDir, statBuilder)
-    val joinPaths = pp.createPartitions(tableNames, exprs, innerConnector, outerConnector, predCols, joinInputs,
-      groupingCols, isRandom)
-
-
-    for ((table, index) <- tableNames.zipWithIndex){
-      val partitions = getListOfFiles2(dataDir + table, excludedFiles)
-      for (part <- partitions){
-        val nType = if (index == 0) "start" else if (index == tableNames.size - 1) "end" else "interm"
-        val vertex = new joinGraph.Node(part.getName, nType, table)
-        joinGraph.addVertex(vertex)
-      }
-
-    }
-
-    for (ji <- joinInputs)
-      joinGraph.addEdges(ji._1, ji._2)
-
-    val paths: ListBuffer[ListBuffer[Set[joinGraph.Node]]] = joinGraph.calculatePaths()
 
     var i = 0
-    val maxIterations = math.min(10.0, joinPaths.size.toDouble).toInt
+    val maxIterations = 1
     // errors per iteration
     val errorsPerIter: ListBuffer[(Double, Double)] = ListBuffer()
     val foundGroups: ListBuffer[String] = ListBuffer()
 
-    // total number of tuples in each table
-    val statDir = "Statistics_" + dataDir.slice(dataDir.indexOf("sf"), dataDir.length)
-    val totalTupleCounts: mutable.Map[String, Long] = Map()
-    for (table <- tableNames)
-      totalTupleCounts += (table -> statBuilder.getStatAsString(statDir + "/" + table + "/totalnumtuples.txt").toLong)
-
-    // already sampled partitions
-    val sampledPartitions: ListBuffer[String] = ListBuffer()
 
     // result cache, so keep track of all groups found so far
     var resCache: mutable.Map[(String, String), Map[String, String]] = Map()
 
-    println(joinPaths.size)
-
-
-    val seen: ListBuffer[String] = ListBuffer()
-
-    for (path <- joinPaths) {
-      for (node <- path._1.getNodes()) {
-        val key = node.head.getTableName() + "/" + node.head.getName()
-        seen.append(key)
-      }
-    }
 
     while (i < maxIterations) {
-      val time = System.nanoTime
-      val sampledPaths = pp.samplePaths(joinPaths, p.toInt)
-
       // For each table, load the list of its sampled partitions
-      for ((table, index) <- tableNames.zipWithIndex){
-        val partitionNames: ListBuffer[String] = ListBuffer()
-        for (path <- sampledPaths){
-          partitionNames += dataDir + table + "/" + path.getNodes()(index).head.getName()
+      for ((table, sampler) <- tableSamplers){
+        if (table == "supplier" || table == "nation" || table == "region"){
+          val sample = spark.read.parquet(dataDir + table)
+          sample.createOrReplaceTempView(table)
+        } else {
+            if (sampler._1 == "uniform") {
+              val sample = spark.read.parquet(dataDir + table).sample(p)
+              sample.write.mode(SaveMode.Overwrite).format("parquet").save("samples_" + dataDir + table)
+              val sample2 = spark.read.parquet("samples_" + dataDir + table)
+              sample2.createOrReplaceTempView(table)
+            } else if (sampler._1 == "universe"){
+              val data = spark.read.parquet(dataDir + table)
+              val samplers = new Samplers
+              val sample = samplers.universeSamplerV2(data, sampler._2, p)
+              sample.write.mode(SaveMode.Overwrite).format("parquet").save("samples_" + dataDir + table)
+              val sample2 = spark.read.parquet("samples_" + dataDir + table)
+              sample2.createOrReplaceTempView(table)
+            }
         }
-        val partitionDF = spark.read.parquet(partitionNames: _*)
-
-        partitionDF.createOrReplaceTempView(table)
       }
 
       val partial = spark.sql(queryWithoutAgg)
 
       if (partial.count() > 0L) {
-        // add sampled paths
-        for (path <- sampledPaths) {
-          for (node <- path.getNodes()) {
-            val key = node.head.getTableName() + "/" + node.head.getName()
-            sampledPartitions.append(key)
-          }
-        }
 
         /*
         Step 1: Join all tuples, without computing aggregate, so that we can compute their combined sid
@@ -200,7 +157,21 @@ object MultiTableQueryExecutor {
         val aggregatesNoSid = aggregates.filterNot(_._3.contains("sid"))
 
 
-        val sf = math.max(1.0, 1.0 / (sampledPartitions.toSet.size.toDouble / seen.size.toDouble))
+        var sf = 1.0
+        var prevSamp = ""
+
+        for ((table, sampler) <- tableSamplers) {
+          if (!(table == "supplier" || table == "nation" || table == "region")) {
+            if (sampler._1 == "uniform") {
+              sf *= (i.toDouble + 1.0) / 100.0
+            } else if (sampler._1 == "universe") {
+              if (prevSamp == "uniform")
+                sf *= (i.toDouble + 1.0) / 100.0
+            }
+            prevSamp = sampler._1
+          }
+        }
+
         val partialResult = resultCombiner.combine(resultAggregatedWithSid, aggregatesNoSid, sf)
         // update cache
         if (i == 0) {
@@ -247,14 +218,12 @@ object MultiTableQueryExecutor {
         val missingGroupPct = 1.0 - foundGroups.toSet.size.toDouble / trueNumGroups
 
         errorsPerIter.append((avgError, missingGroupPct))
-        val duration = (System.nanoTime - time) / 1e9d
-        println(avgError, missingGroupPct, duration)
 
+        i += 1
       } else {
           errorsPerIter.append((1.0, 1.0))
+          i += 1
       }
-
-      i += 1
 
     } // end while
 

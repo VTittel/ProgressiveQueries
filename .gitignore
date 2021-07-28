@@ -23,7 +23,10 @@ PartitionedWithSkew_sf10
 data_parquet
 spark-warehouse
 errors
-out
+out/
 .cache-main
-Statistics
-Statistics_full
+Statistics/
+Statistics_full/
+data_parquet_sf1/
+data_parquet_sf10/
+so_data/
